@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>选择要下载的文件</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f5f6fa; color: #2c3e50; padding: 20px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  .header {
+    background: #fff; border-radius: 10px; padding: 20px 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 16px;
+  }
+  .header h1 { font-size: 18px; margin-bottom: 6px; word-break: break-all; }
+  .header .folder { font-size: 13px; color: #7f8c8d; word-break: break-all; }
+  .toolbar {
+    background: #fff; border-radius: 10px; padding: 12px 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 16px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    position: sticky; top: 10px; z-index: 10;
+  }
+  .toolbar button {
+    border: 1px solid #dcdfe6; background: #fff; border-radius: 6px;
+    padding: 6px 14px; font-size: 13px; cursor: pointer; color: #606266;
+  }
+  .toolbar button:hover { border-color: #409eff; color: #409eff; }
+  .toolbar .counter { margin-left: auto; font-size: 13px; color: #909399; }
+  .toolbar .submit {
+    background: #409eff; border-color: #409eff; color: #fff;
+    padding: 8px 22px; font-size: 14px;
+  }
+  .toolbar .submit:hover { background: #66b1ff; }
+  .toolbar .submit:disabled { background: #a0cfff; cursor: not-allowed; }
+  .tree {
+    background: #fff; border-radius: 10px; padding: 16px 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  }
+  .tree ul { list-style: none; padding-left: 24px; }
+  .tree > ul { padding-left: 0; }
+  .node { padding: 3px 0; }
+  .node label {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+    font-size: 14px; line-height: 1.7; border-radius: 4px; padding: 2px 6px;
+  }
+  .node label:hover { background: #f0f7ff; }
+  .node input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; accent-color: #409eff; }
+  .icon { flex-shrink: 0; }
+  .fname { word-break: break-all; }
+  .ext {
+    flex-shrink: 0; font-size: 11px; color: #909399; background: #f4f4f5;
+    border-radius: 4px; padding: 1px 6px; text-transform: uppercase;
+  }
+  .ext.audio { color: #67c23a; background: #f0f9eb; }
+  .ext.video { color: #e6a23c; background: #fdf6ec; }
+  .result {
+    display: none; background: #f0f9eb; border: 1px solid #c2e7b0;
+    border-radius: 10px; padding: 20px 24px; margin-bottom: 16px;
+    color: #529b2e; font-size: 14px; line-height: 1.9; word-break: break-all;
+  }
+  .result.error { background: #fef0f0; border-color: #fbc4c4; color: #c45656; }
+  .loading { text-align: center; color: #909399; padding: 40px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1 id="workTitle">加载中...</h1>
+    <div class="folder" id="folderName"></div>
+  </div>
+  <div class="result" id="result"></div>
+  <div class="toolbar">
+    <button onclick="setAll(true)">全选</button>
+    <button onclick="setAll(false)">全不选</button>
+    <button onclick="invertAll()">反选</button>
+    <button onclick="selectAudioOnly()">只选音频</button>
+    <span class="counter" id="counter"></span>
+    <button class="submit" id="submitBtn" onclick="submitSelection()">生成下载任务</button>
+  </div>
+  <div class="tree" id="tree"><div class="loading">正在获取文件列表...</div></div>
+</div>
+
+<script>
+const AUDIO_EXT = ['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac'];
+const VIDEO_EXT = ['.mp4', '.webm', '.mkv', '.avi', '.mov'];
+let fileNodes = []; // {cb, url, ext}
+
+function getExt(name) {
+  const i = name.lastIndexOf('.');
+  return i >= 0 ? name.slice(i).toLowerCase() : '';
+}
+
+function buildNode(track) {
+  const li = document.createElement('li');
+  li.className = 'node';
+  const label = document.createElement('label');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = true; // 默认全选
+  const icon = document.createElement('span');
+  icon.className = 'icon';
+  const name = document.createElement('span');
+  name.className = 'fname';
+  name.textContent = track.title;
+  label.appendChild(cb);
+  label.appendChild(icon);
+  label.appendChild(name);
+
+  if (track.type === 'folder') {
+    icon.textContent = '📁';
+    li.appendChild(label);
+    const ul = document.createElement('ul');
+    const childCbs = [];
+    (track.children || []).forEach(child => {
+      const node = buildNode(child);
+      ul.appendChild(node.el);
+      childCbs.push(...node.fileCbs);
+    });
+    li.appendChild(ul);
+    // 父级勾选级联到所有子孙文件
+    cb.addEventListener('change', () => {
+      childCbs.forEach(c => { c.checked = cb.checked; });
+      updateAncestors(li);
+      updateCounter();
+    });
+    childCbs.forEach(c => c.addEventListener('change', () => {
+      updateAncestors(li);
+    }));
+    return { el: li, fileCbs: childCbs };
+  } else {
+    icon.textContent = '📄';
+    const ext = getExt(track.title);
+    if (ext) {
+      const badge = document.createElement('span');
+      badge.className = 'ext' + (AUDIO_EXT.includes(ext) ? ' audio' : VIDEO_EXT.includes(ext) ? ' video' : '');
+      badge.textContent = ext.slice(1);
+      label.appendChild(badge);
+    }
+    li.appendChild(label);
+    fileNodes.push({ cb, url: track.mediaDownloadUrl, ext });
+    cb.addEventListener('change', updateCounter);
+    return { el: li, fileCbs: [cb] };
+  }
+}
+
+// 根据子节点状态更新所有祖先文件夹勾选框（含半选态）
+function updateAncestors(li) {
+  let cur = li.parentElement && li.parentElement.parentElement;
+  while (cur && cur.classList && cur.classList.contains('node')) {
+    const folderCb = cur.querySelector(':scope > label > input[type="checkbox"]');
+    const boxes = cur.querySelectorAll('ul input[type="checkbox"]');
+    let checked = 0;
+    boxes.forEach(b => { if (b.checked) checked++; });
+    folderCb.checked = checked === boxes.length && boxes.length > 0;
+    folderCb.indeterminate = checked > 0 && checked < boxes.length;
+    cur = cur.parentElement && cur.parentElement.parentElement;
+  }
+}
+
+function updateCounter() {
+  const total = fileNodes.length;
+  const sel = fileNodes.filter(f => f.cb.checked).length;
+  document.getElementById('counter').textContent = `已选 ${sel} / ${total} 个文件`;
+}
+
+function setAll(v) {
+  document.querySelectorAll('#tree input[type="checkbox"]').forEach(cb => {
+    cb.checked = v; cb.indeterminate = false;
+  });
+  updateCounter();
+}
+
+function invertAll() {
+  fileNodes.forEach(f => { f.cb.checked = !f.cb.checked; });
+  document.querySelectorAll('#tree li.node').forEach(updateAncestors);
+  updateCounter();
+}
+
+function selectAudioOnly() {
+  fileNodes.forEach(f => { f.cb.checked = AUDIO_EXT.includes(f.ext); });
+  document.querySelectorAll('#tree li.node').forEach(updateAncestors);
+  updateCounter();
+}
+
+async function submitSelection() {
+  const selected = fileNodes.filter(f => f.cb.checked).map(f => f.url);
+  if (selected.length === 0) {
+    alert('请至少勾选一个文件');
+    return;
+  }
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.textContent = '正在生成...';
+  const result = document.getElementById('result');
+  try {
+    const resp = await fetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selected })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '导出失败');
+    result.className = 'result';
+    result.innerHTML = `✅ 生成完成，共 <b>${data.count}</b> 个链接<br>` +
+      `作品目录：${data.dir}<br>` +
+      `双击 <b>download_scripts\\idm_download.bat</b> 将任务添加到 IDM；` +
+      `下载完成后双击 <b>cleanup_links.bat</b> 一键清理 links.txt<br>` +
+      `本页面和本地服务已可以关闭`;
+    btn.textContent = '已生成 ✓';
+  } catch (e) {
+    result.className = 'result error';
+    result.textContent = '❌ ' + e.message;
+    btn.disabled = false;
+    btn.textContent = '生成下载任务';
+  }
+}
+
+(async function init() {
+  try {
+    const resp = await fetch('/api/tree');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '获取失败');
+    document.getElementById('workTitle').textContent = data.title;
+    document.getElementById('folderName').textContent = '保存到: ' + data.folderName;
+    const tree = document.getElementById('tree');
+    tree.innerHTML = '';
+    const ul = document.createElement('ul');
+    (data.tree || []).forEach(t => ul.appendChild(buildNode(t).el));
+    tree.appendChild(ul);
+    updateCounter();
+  } catch (e) {
+    document.getElementById('tree').innerHTML = '<div class="loading">❌ ' + e.message + '</div>';
+  }
+})();
+</script>
+</body>
+</html>

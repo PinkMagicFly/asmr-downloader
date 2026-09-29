@@ -1008,30 +1008,41 @@ func (m *EngineManager) ExportLinksOnly(ctx context.Context, id string, outputBa
 		workInfo.Title,
 	)
 
+	return m.ExportTracks(folderName, outputBaseDir, tracks, nil)
+}
+
+// ExportTracks 将音轨列表导出为 links.txt + 下载脚本。
+// selected 为 nil 表示导出全部文件；否则只导出 URL 在集合中的文件。
+// 选中后为空的文件夹不会创建。
+func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tracks []model.Track, selected map[string]bool) (map[string]int, string, error) {
 	// 确定输出根目录
 	if outputBaseDir == "" {
 		outputBaseDir = "."
 	}
 	workOutputDir := filepath.Join(outputBaseDir, folderName)
 
-	// 递归收集每个文件夹下的文件 URL
+	// 递归收集每个文件夹下的文件 URL（按选中集合过滤）
 	folderFiles := make(map[string][]string)
-	var collect func([]model.Track, string) error
-	collect = func(ts []model.Track, relPath string) error {
+	var collect func(ts []model.Track, relPath string)
+	collect = func(ts []model.Track, relPath string) {
 		for _, t := range ts {
 			if t.Type != "folder" {
+				if t.MediaDownloadURL == "" {
+					continue
+				}
+				if selected != nil && !selected[t.MediaDownloadURL] {
+					continue
+				}
 				folderFiles[relPath] = append(folderFiles[relPath], t.MediaDownloadURL)
 			} else {
-				subPath := filepath.Join(relPath, t.Title)
-				if err := collect(t.Children, subPath); err != nil {
-					return err
-				}
+				collect(t.Children, filepath.Join(relPath, t.Title))
 			}
 		}
-		return nil
 	}
-	if err := collect(tracks, ""); err != nil {
-		return nil, "", err
+	collect(tracks, "")
+
+	if len(folderFiles) == 0 {
+		return nil, "", fmt.Errorf("没有选中任何文件")
 	}
 
 	// 创建输出目录结构并写入 links.txt，同时记录文件夹路径用于生成脚本
@@ -1053,25 +1064,46 @@ func (m *EngineManager) ExportLinksOnly(ctx context.Context, id string, outputBa
 		stats[relPath] = len(urls)
 		folderPaths[relPath] = dir
 	}
-// 创建脚本文档夹
-scriptsDir := filepath.Join(workOutputDir, "download_scripts")
-if err := os.MkdirAll(scriptsDir, 0755); err != nil {
-    return nil, "", fmt.Errorf("创建脚本目录失败: %w", err)
+	// 创建脚本文档夹
+	scriptsDir := filepath.Join(workOutputDir, "download_scripts")
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		return nil, "", fmt.Errorf("创建脚本目录失败: %w", err)
+	}
+
+	// 生成 IDM 批处理脚本（实际是引导 PowerShell 的 .bat）
+	if err := m.generateIDMScript(workOutputDir, folderPaths, scriptsDir); err != nil {
+		logger.Warn("生成 IDM 脚本失败: %v", err)
+	}
+	// 生成 Aria2 下载脚本（跨平台）
+	if err := m.generateAria2Script(workOutputDir, folderPaths, scriptsDir); err != nil {
+		logger.Warn("生成 Aria2 脚本失败: %v", err)
+	}
+	// 生成一键清理 links.txt 脚本
+	if err := generateCleanupScript(workOutputDir); err != nil {
+		logger.Warn("生成清理脚本失败: %v", err)
+	}
+
+	logger.Info("已导出链接文件，共 %d 个文件夹", len(folderFiles))
+	logger.Info("作品目录: %s", workOutputDir)
+
+	return stats, workOutputDir, nil
 }
 
-// 生成 IDM 批处理脚本（实际是引导 PowerShell 的 .bat）
-if err := m.generateIDMScript(workOutputDir, folderPaths, scriptsDir); err != nil {
-    logger.Warn("生成 IDM 脚本失败: %v", err)
-}
-// 生成 Aria2 下载脚本（跨平台）
-if err := m.generateAria2Script(workOutputDir, folderPaths, scriptsDir); err != nil {
-    logger.Warn("生成 Aria2 脚本失败: %v", err)
-}
-
-logger.Info("已导出链接文件，共 %d 个文件夹", len(folderFiles))
-logger.Info("作品目录: %s", workOutputDir)
-
-return stats, workOutputDir, nil
+// generateCleanupScript 在作品目录根目录生成 cleanup_links.bat，
+// 用于下载完成后一键递归删除所有 links.txt
+func generateCleanupScript(workOutputDir string) error {
+	batPath := filepath.Join(workOutputDir, "cleanup_links.bat")
+	batLines := []string{
+		"@echo off",
+		"chcp 65001 >nul",
+		"echo 正在递归清理 links.txt ...",
+		"for /r \"%~dp0\" %%f in (links.txt) do if exist \"%%f\" del /q \"%%f\"",
+		"echo 清理完成",
+		"pause",
+	}
+	content := strings.Join(batLines, "\r\n")
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	return os.WriteFile(batPath, append(bom, []byte(content)...), 0644)
 }
 
 // ExportHotWorks 导出热门榜前 count 个作品的下载链接（增强版：显示标题）
