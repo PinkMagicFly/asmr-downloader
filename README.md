@@ -83,8 +83,10 @@ go build -o asmroner
 ./asmroner export RJ01544940 -o ./downloads
 ./asmroner export hot100 -n 20 -o ./downloads
 
-# 网页勾选要下载的文件后导出（交给 IDM 下载）
-./asmroner pick RJ01526160 -o ./downloads
+# 本地网站搜索 RJ 号、网页勾选文件后导出（交给 IDM 下载）
+./asmroner pick                       # 启动网站，网页中搜索 RJ 号
+./asmroner pick RJ01526160            # 启动网站并直接加载该作品
+./asmroner pick -o ./downloads        # 指定输出目录，Ctrl+C 停止服务
 
 # 下载完成后递归清理所有 links.txt
 ./asmroner clean ./downloads/RJ01526160-xxx
@@ -212,7 +214,7 @@ download_jitter_max = 5000  # 下载请求最大随机抖动（ms）
 | `list` | `-d` | 查看作品资源目录内的文件类型及数量；`-d/--detail` 列出所有文件 |
 | `download` | `-d`, `-n`, `-f` | 下载目录、hot100 模式下载数量、强制覆盖已下载文件 |
 | `export` | `-o`, `-n` | 输出目录、hot100 模式导出数量 |
-| `pick` | `-o`, `-p` | 网页勾选要下载的文件后导出（输出目录、页面端口），下载交给 IDM |
+| `pick` | `[RJID]`, `-o`, `-p` | 启动本地网站：搜索 RJ 号、网页勾选文件后导出，下载交给 IDM |
 | `clean` | — | 递归删除目录下所有 links.txt |
 | `sync` | — | 仅同步元数据（自动比对本地/远端，显示同步率） |
 | `sync download` | `-d` | 同步后按容量限制逐批下载，含状态跟踪 |

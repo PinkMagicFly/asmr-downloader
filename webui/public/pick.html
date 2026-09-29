@@ -11,16 +11,32 @@
     background: #f5f6fa; color: #2c3e50; padding: 20px;
   }
   .container { max-width: 900px; margin: 0 auto; }
+  .search-bar {
+    background: #fff; border-radius: 10px; padding: 16px 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 16px;
+    display: flex; gap: 10px;
+  }
+  .search-bar input {
+    flex: 1; border: 1px solid #dcdfe6; border-radius: 6px;
+    padding: 9px 14px; font-size: 14px; outline: none;
+  }
+  .search-bar input:focus { border-color: #409eff; }
+  .search-bar button {
+    border: none; background: #409eff; color: #fff; border-radius: 6px;
+    padding: 9px 24px; font-size: 14px; cursor: pointer; white-space: nowrap;
+  }
+  .search-bar button:hover { background: #66b1ff; }
+  .search-bar button:disabled { background: #a0cfff; cursor: not-allowed; }
   .header {
-    background: #fff; border-radius: 10px; padding: 20px 24px;
+    display: none; background: #fff; border-radius: 10px; padding: 20px 24px;
     box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 16px;
   }
   .header h1 { font-size: 18px; margin-bottom: 6px; word-break: break-all; }
   .header .folder { font-size: 13px; color: #7f8c8d; word-break: break-all; }
   .toolbar {
-    background: #fff; border-radius: 10px; padding: 12px 16px;
+    display: none; background: #fff; border-radius: 10px; padding: 12px 16px;
     box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 16px;
-    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    flex-wrap: wrap; gap: 8px; align-items: center;
     position: sticky; top: 10px; z-index: 10;
   }
   .toolbar button {
@@ -36,7 +52,7 @@
   .toolbar .submit:hover { background: #66b1ff; }
   .toolbar .submit:disabled { background: #a0cfff; cursor: not-allowed; }
   .tree {
-    background: #fff; border-radius: 10px; padding: 16px 20px;
+    display: none; background: #fff; border-radius: 10px; padding: 16px 20px;
     box-shadow: 0 2px 8px rgba(0,0,0,.06);
   }
   .tree ul { list-style: none; padding-left: 24px; }
@@ -62,17 +78,21 @@
     color: #529b2e; font-size: 14px; line-height: 1.9; word-break: break-all;
   }
   .result.error { background: #fef0f0; border-color: #fbc4c4; color: #c45656; }
-  .loading { text-align: center; color: #909399; padding: 40px; }
+  .placeholder { text-align: center; color: #909399; padding: 60px 20px; font-size: 14px; }
 </style>
 </head>
 <body>
 <div class="container">
-  <div class="header">
-    <h1 id="workTitle">加载中...</h1>
-    <div class="folder" id="folderName"></div>
+  <div class="search-bar">
+    <input id="rjInput" type="text" placeholder="输入 RJ 号，例如 RJ01526160" autofocus>
+    <button id="searchBtn" onclick="searchWork()">搜索</button>
   </div>
   <div class="result" id="result"></div>
-  <div class="toolbar">
+  <div class="header" id="header">
+    <h1 id="workTitle"></h1>
+    <div class="folder" id="folderName"></div>
+  </div>
+  <div class="toolbar" id="toolbar">
     <button onclick="setAll(true)">全选</button>
     <button onclick="setAll(false)">全不选</button>
     <button onclick="invertAll()">反选</button>
@@ -80,13 +100,15 @@
     <span class="counter" id="counter"></span>
     <button class="submit" id="submitBtn" onclick="submitSelection()">生成下载任务</button>
   </div>
-  <div class="tree" id="tree"><div class="loading">正在获取文件列表...</div></div>
+  <div class="tree" id="tree"></div>
+  <div class="placeholder" id="placeholder">输入 RJ 号搜索作品，勾选要下载的文件后交给 IDM 下载</div>
 </div>
 
 <script>
 const AUDIO_EXT = ['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac'];
 const VIDEO_EXT = ['.mp4', '.webm', '.mkv', '.avi', '.mov'];
 let fileNodes = []; // {cb, url, ext}
+let currentId = '';
 
 function getExt(name) {
   const i = name.lastIndexOf('.');
@@ -185,6 +207,52 @@ function selectAudioOnly() {
   updateCounter();
 }
 
+function showResult(ok, html) {
+  const result = document.getElementById('result');
+  result.className = 'result' + (ok ? '' : ' error');
+  result.innerHTML = html;
+  result.style.display = 'block';
+}
+
+async function searchWork() {
+  const input = document.getElementById('rjInput');
+  const btn = document.getElementById('searchBtn');
+  const id = input.value.trim();
+  if (!id) return;
+  btn.disabled = true;
+  btn.textContent = '搜索中...';
+  document.getElementById('result').style.display = 'none';
+  try {
+    const resp = await fetch('/api/work?id=' + encodeURIComponent(id));
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '获取失败');
+
+    currentId = data.id;
+    fileNodes = [];
+    document.getElementById('workTitle').textContent = data.title;
+    document.getElementById('folderName').textContent = '保存到: ' + data.folderName;
+    const tree = document.getElementById('tree');
+    tree.innerHTML = '';
+    const ul = document.createElement('ul');
+    (data.tree || []).forEach(t => ul.appendChild(buildNode(t).el));
+    tree.appendChild(ul);
+
+    document.getElementById('placeholder').style.display = 'none';
+    document.getElementById('header').style.display = 'block';
+    document.getElementById('toolbar').style.display = 'flex';
+    tree.style.display = 'block';
+    const submitBtn = document.getElementById('submitBtn');
+    submitBtn.disabled = false;
+    submitBtn.textContent = '生成下载任务';
+    updateCounter();
+  } catch (e) {
+    showResult(false, '❌ ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '搜索';
+  }
+}
+
 async function submitSelection() {
   const selected = fileNodes.filter(f => f.cb.checked).map(f => f.url);
   if (selected.length === 0) {
@@ -194,45 +262,37 @@ async function submitSelection() {
   const btn = document.getElementById('submitBtn');
   btn.disabled = true;
   btn.textContent = '正在生成...';
-  const result = document.getElementById('result');
   try {
     const resp = await fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selected })
+      body: JSON.stringify({ id: currentId, selected })
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || '导出失败');
-    result.className = 'result';
-    result.innerHTML = `✅ 生成完成，共 <b>${data.count}</b> 个链接<br>` +
+    showResult(true, `✅ ${currentId} 生成完成，共 <b>${data.count}</b> 个链接<br>` +
       `作品目录：${data.dir}<br>` +
       `双击 <b>download_scripts\\idm_download.bat</b> 将任务添加到 IDM；` +
       `下载完成后双击 <b>cleanup_links.bat</b> 一键清理 links.txt<br>` +
-      `本页面和本地服务已可以关闭`;
+      `可以继续搜索下一个作品`);
     btn.textContent = '已生成 ✓';
   } catch (e) {
-    result.className = 'result error';
-    result.textContent = '❌ ' + e.message;
+    showResult(false, '❌ ' + e.message);
     btn.disabled = false;
     btn.textContent = '生成下载任务';
   }
 }
 
-(async function init() {
-  try {
-    const resp = await fetch('/api/tree');
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || '获取失败');
-    document.getElementById('workTitle').textContent = data.title;
-    document.getElementById('folderName').textContent = '保存到: ' + data.folderName;
-    const tree = document.getElementById('tree');
-    tree.innerHTML = '';
-    const ul = document.createElement('ul');
-    (data.tree || []).forEach(t => ul.appendChild(buildNode(t).el));
-    tree.appendChild(ul);
-    updateCounter();
-  } catch (e) {
-    document.getElementById('tree').innerHTML = '<div class="loading">❌ ' + e.message + '</div>';
+document.getElementById('rjInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') searchWork();
+});
+
+// 支持 ?id=RJ... 直接加载
+(function init() {
+  const id = new URLSearchParams(location.search).get('id');
+  if (id) {
+    document.getElementById('rjInput').value = id;
+    searchWork();
   }
 })();
 </script>
