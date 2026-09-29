@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"asmroner/internal/consts"
 	"asmroner/internal/logger"
 	"fmt"
 	"io/fs"
@@ -45,13 +46,13 @@ clean 命令递归清理指定目录（含所有子目录）中的：
 				return err
 			}
 			if d.IsDir() {
-				if d.Name() == "download_scripts" {
+				if d.Name() == consts.DownloadScriptsDir {
 					scriptDirs = append(scriptDirs, path)
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if d.Name() == "links.txt" {
+			if d.Name() == consts.LinksFileName {
 				if err := os.Remove(path); err != nil {
 					logger.Warn("删除失败 %s: %v", path, err)
 					return nil

@@ -54,15 +54,20 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 `,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		eng, err := engine.NewEngineManager(10, 5, 500, 2000)
+		eng, err := engine.NewEngineManager(
+			model.AppConfig.Limit.DownloadQPS, 1,
+			model.AppConfig.Limit.DownloadJitterMin,
+			model.AppConfig.Limit.DownloadJitterMax,
+		)
 		if err != nil {
 			logger.Fail("初始化引擎失败: %v", err)
 			return
 		}
 
-		// 已拉取的作品缓存：RJID -> 文件夹名 + 文件树，避免导出时重复请求
+		// 已拉取的作品缓存：RJID -> 文件夹名 + 文件树 + 标题，避免导出/重复搜索时再次请求
 		type cachedWork struct {
 			folderName string
+			title      string
 			tracks     []model.Track
 		}
 		var cacheMu sync.Mutex
@@ -81,50 +86,36 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 			c.Data(http.StatusOK, "text/html; charset=utf-8", content)
 		})
 
-		// API: 按 RJ 号拉取作品文件树
+		// API: 按 RJ 号拉取作品文件树（命中缓存时直接返回）
 		r.GET("/api/work", func(c *gin.Context) {
-			id := strings.TrimSpace(c.Query("id"))
-			valid, prefix, number, err := utils.IsValidDlsiteID(id)
+			rawID := strings.TrimSpace(c.Query("id"))
+			valid, _, number, err := utils.IsValidDlsiteID(rawID)
 			if err != nil || !valid {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "无效的作品ID: " + id})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "无效的作品ID: " + rawID})
 				return
 			}
+			cacheID := number // 缓存键统一用数字部分
 
-			ctx := c.Request.Context()
-			if err := eng.DownLimiter.Wait(ctx); err != nil {
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
-				return
-			}
-
-			workInfo, err := eng.GetWorkInfo(ctx, number)
-			if err != nil {
-				logger.Warn("获取作品信息失败: %v，将使用ID作为标题", err)
-				workInfo = model.WorkInfo{Title: id, Release: ""}
-			}
-			tracks, err := eng.GetVoiceTracks(number)
-			if err != nil {
-				c.JSON(http.StatusBadGateway, gin.H{"error": "获取文件列表失败: " + err.Error()})
-				return
-			}
-
-			folderName := utils.BuildFolderName(
-				model.AppConfig.Downloader.FolderNameFormat,
-				strings.ToUpper(prefix)+number,
-				workInfo.Release,
-				workInfo.HasSubtitle,
-				workInfo.Title,
-			)
-
-			cacheKey := strings.ToUpper(prefix) + number
 			cacheMu.Lock()
-			workCache[cacheKey] = cachedWork{folderName: folderName, tracks: tracks}
+			work, ok := workCache[cacheID]
 			cacheMu.Unlock()
+			if !ok {
+				folderName, tracks, workInfo, err := eng.PrepareWorkExport(c.Request.Context(), rawID)
+				if err != nil {
+					c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+					return
+				}
+				work = cachedWork{folderName: folderName, title: workInfo.Title, tracks: tracks}
+				cacheMu.Lock()
+				workCache[cacheID] = work
+				cacheMu.Unlock()
+			}
 
 			c.JSON(http.StatusOK, gin.H{
-				"id":         cacheKey,
-				"title":      workInfo.Title,
-				"folderName": folderName,
-				"tree":       tracks,
+				"id":         cacheID,
+				"title":      work.title,
+				"folderName": work.folderName,
+				"tree":       work.tracks,
 			})
 		})
 
@@ -142,7 +133,10 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 				return
 			}
 
-			cacheKey := strings.ToUpper(strings.TrimSpace(req.ID))
+			cacheKey := strings.TrimSpace(req.ID)
+			if _, _, number, err := utils.IsValidDlsiteID(cacheKey); err == nil {
+				cacheKey = number // 允许前端传完整 RJID，统一归一化为数字部分
+			}
 			cacheMu.Lock()
 			work, ok := workCache[cacheKey]
 			cacheMu.Unlock()
@@ -156,15 +150,15 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 				selected[u] = true
 			}
 
-			stats, workDir, folders, err := eng.ExportTracks(work.folderName, pickOutputDir, work.tracks, selected)
+			workDir, folders, err := eng.ExportTracks(work.folderName, pickOutputDir, work.tracks, selected)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 
 			total := 0
-			for _, n := range stats {
-				total += n
+			for _, f := range folders {
+				total += len(f.URLs)
 			}
 			logger.Done("%s 已导出 %d 个链接 -> %s", cacheKey, total, workDir)
 

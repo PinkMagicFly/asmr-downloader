@@ -977,41 +977,58 @@ func (m *EngineManager) DownloadHot100(ctx context.Context, count int, dir strin
 // outputBaseDir: 输出根目录路径。若为空则使用当前目录。
 // 返回每个文件夹下链接数量的统计信息，以及实际作品输出目录。
 func (m *EngineManager) ExportLinksOnly(ctx context.Context, id string, outputBaseDir string) (map[string]int, string, error) {
+	folderName, tracks, _, err := m.PrepareWorkExport(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+
+	workDir, folders, err := m.ExportTracks(folderName, outputBaseDir, tracks, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	stats := make(map[string]int, len(folders))
+	for _, f := range folders {
+		stats[f.RelPath] = len(f.URLs)
+	}
+	return stats, workDir, nil
+}
+
+// PrepareWorkExport 校验作品 ID 并拉取导出所需的数据：作品文件夹名、文件树、作品信息。
+// 供 export / pick 等需要按作品导出链接的命令共用。
+func (m *EngineManager) PrepareWorkExport(ctx context.Context, id string) (folderName string, tracks []model.Track, workInfo model.WorkInfo, err error) {
 	// 校验 ID
 	valid, prefix, number, err := utils.IsValidDlsiteID(id)
 	if err != nil || !valid {
-		return nil, "", fmt.Errorf("无效的作品ID: %s", id)
+		return "", nil, workInfo, fmt.Errorf("无效的作品ID: %s", id)
 	}
 
 	// 限速等待
 	if err := m.DownLimiter.Wait(ctx); err != nil {
-		return nil, "", fmt.Errorf("限流器等待失败: %w", err)
+		return "", nil, workInfo, fmt.Errorf("限流器等待失败: %w", err)
 	}
 
 	// 获取作品信息
-	workInfo, err := m.GetWorkInfo(ctx, number)
+	workInfo, err = m.GetWorkInfo(ctx, number)
 	if err != nil {
 		logger.Warn("获取作品信息失败: %v，将使用ID作为标题", err)
 		workInfo = model.WorkInfo{Title: id, Release: ""}
 	}
 
 	// 获取音轨列表
-	tracks, err := m.GetVoiceTracks(number)
+	tracks, err = m.GetVoiceTracks(number)
 	if err != nil {
-		return nil, "", fmt.Errorf("获取音轨列表失败: %w", err)
+		return "", nil, workInfo, fmt.Errorf("获取音轨列表失败: %w", err)
 	}
 
 	// 构建作品文件夹名（与下载逻辑一致）
-	folderName := utils.BuildFolderName(
+	folderName = utils.BuildFolderName(
 		model.AppConfig.Downloader.FolderNameFormat,
 		strings.ToUpper(prefix)+number,
 		workInfo.Release,
 		workInfo.HasSubtitle,
 		workInfo.Title,
 	)
-
-	stats, workDir, _, err := m.ExportTracks(folderName, outputBaseDir, tracks, nil)
-	return stats, workDir, err
+	return folderName, tracks, workInfo, nil
 }
 
 // fileEntry 待导出的文件条目
@@ -1020,28 +1037,18 @@ type fileEntry struct {
 	Size int64
 }
 
-// FolderExport 一个待导出的文件夹（生成下载脚本时按切片顺序处理，保证大文件优先）
+// FolderExport 一个待导出的文件夹（生成下载脚本和 IDM 入队时按切片顺序处理，保证大文件优先）
 type FolderExport struct {
-	RelPath string // 相对作品目录的路径，根目录为 ""
-	Dir     string // 实际绝对路径
-}
-
-// maxEntrySize 返回文件条目中最大的文件大小
-func maxEntrySize(entries []fileEntry) int64 {
-	var max int64
-	for _, e := range entries {
-		if e.Size > max {
-			max = e.Size
-		}
-	}
-	return max
+	RelPath string   // 相对作品目录的路径，根目录为 ""
+	Dir     string   // 实际绝对路径
+	URLs    []string // 该文件夹中的下载链接，按文件大小降序
 }
 
 // ExportTracks 将音轨列表导出为 links.txt + 下载脚本。
 // selected 为 nil 表示导出全部文件；否则只导出 URL 在集合中的文件。
 // 选中后为空的文件夹不会创建。
-// 返回的 folders 按"大文件优先"排序，可用于直接调用 EnqueueIDM。
-func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tracks []model.Track, selected map[string]bool) (map[string]int, string, []FolderExport, error) {
+// 返回作品输出目录和按"大文件优先"排序的文件夹列表（可直接传给 EnqueueIDM）。
+func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tracks []model.Track, selected map[string]bool) (string, []FolderExport, error) {
 	// 确定输出根目录
 	if outputBaseDir == "" {
 		outputBaseDir = "."
@@ -1069,20 +1076,26 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	collect(tracks, "")
 
 	if len(folderFiles) == 0 {
-		return nil, "", nil, fmt.Errorf("没有选中任何文件")
+		return "", nil, fmt.Errorf("没有选中任何文件")
 	}
 
-	// 文件夹排序：按文件夹内最大文件的大小降序（保证大文件先进入下载队列）
+	// 预计算每个文件夹的最大文件大小（供排序使用，避免在比较器中重复扫描）
+	maxSizes := make(map[string]int64, len(folderFiles))
 	folderNames := make([]string, 0, len(folderFiles))
-	for relPath := range folderFiles {
+	for relPath, entries := range folderFiles {
 		folderNames = append(folderNames, relPath)
+		for _, e := range entries {
+			if e.Size > maxSizes[relPath] {
+				maxSizes[relPath] = e.Size
+			}
+		}
 	}
+	// 文件夹排序：按文件夹内最大文件的大小降序（保证大文件先进入下载队列）
 	sort.Slice(folderNames, func(i, j int) bool {
-		return maxEntrySize(folderFiles[folderNames[i]]) > maxEntrySize(folderFiles[folderNames[j]])
+		return maxSizes[folderNames[i]] > maxSizes[folderNames[j]]
 	})
 
 	// 创建输出目录结构并写入 links.txt（每个文件夹内的链接按文件大小降序）
-	stats := make(map[string]int)
 	folders := make([]FolderExport, 0, len(folderNames))
 	for _, relPath := range folderNames {
 		entries := folderFiles[relPath]
@@ -1097,20 +1110,19 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 			dir = filepath.Join(workOutputDir, relPath)
 		}
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, "", nil, fmt.Errorf("创建目录 %s 失败: %w", dir, err)
+			return "", nil, fmt.Errorf("创建目录 %s 失败: %w", dir, err)
 		}
-		linkFile := filepath.Join(dir, "links.txt")
+		linkFile := filepath.Join(dir, consts.LinksFileName)
 		content := strings.Join(urls, "\n")
 		if err := os.WriteFile(linkFile, []byte(content), 0644); err != nil {
-			return nil, "", nil, fmt.Errorf("写入文件 %s 失败: %w", linkFile, err)
+			return "", nil, fmt.Errorf("写入文件 %s 失败: %w", linkFile, err)
 		}
-		stats[relPath] = len(urls)
-		folders = append(folders, FolderExport{RelPath: relPath, Dir: dir})
+		folders = append(folders, FolderExport{RelPath: relPath, Dir: dir, URLs: urls})
 	}
 	// 创建脚本文档夹
-	scriptsDir := filepath.Join(workOutputDir, "download_scripts")
+	scriptsDir := filepath.Join(workOutputDir, consts.DownloadScriptsDir)
 	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
-		return nil, "", nil, fmt.Errorf("创建脚本目录失败: %w", err)
+		return "", nil, fmt.Errorf("创建脚本目录失败: %w", err)
 	}
 
 	// 生成 IDM 批处理脚本（实际是引导 PowerShell 的 .bat）
@@ -1129,7 +1141,7 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	logger.Info("已导出链接文件，共 %d 个文件夹", len(folderFiles))
 	logger.Info("作品目录: %s", workOutputDir)
 
-	return stats, workOutputDir, folders, nil
+	return workOutputDir, folders, nil
 }
 
 // generateCleanupScript 在作品目录根目录生成 cleanup_links.bat，
@@ -1150,9 +1162,10 @@ func generateCleanupScript(workOutputDir string) error {
 	return os.WriteFile(batPath, append(bom, []byte(content)...), 0644)
 }
 
-// EnqueueIDM 按 folders 顺序（大文件优先）把 links.txt 中的链接逐条
+// EnqueueIDM 按 folders 顺序（大文件优先）把其中的链接逐条
 // 添加到 IDM 下载队列，返回成功添加的任务数。
 // 需要配置 downloader.idm_path 指向 IDMan.exe。
+// 逐条顺序执行是刻意的：IDM 是单实例应用，顺序入队可避免竞争。
 func (m *EngineManager) EnqueueIDM(folders []FolderExport) (int, error) {
 	idmPath := ""
 	if m.Config != nil {
@@ -1165,21 +1178,23 @@ func (m *EngineManager) EnqueueIDM(folders []FolderExport) (int, error) {
 		return 0, fmt.Errorf("IDM 路径不存在: %s", idmPath)
 	}
 
+	const maxRetries = 2 // 与生成的 idm_download.ps1 保持一致的重试策略
 	added := 0
 	for _, f := range folders {
-		data, err := os.ReadFile(filepath.Join(f.Dir, "links.txt"))
-		if err != nil {
-			logger.Warn("读取 %s 的 links.txt 失败: %v", f.RelPath, err)
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			url := strings.TrimSpace(line)
-			if url == "" {
-				continue
+		for _, url := range f.URLs {
+			ok := false
+			for retry := 0; retry <= maxRetries; retry++ {
+				cmd := exec.Command(idmPath, "/d", url, "/p", f.Dir, "/a")
+				if err := cmd.Run(); err == nil {
+					ok = true
+					break
+				}
+				if retry < maxRetries {
+					time.Sleep(300 * time.Millisecond)
+				}
 			}
-			cmd := exec.Command(idmPath, "/d", url, "/p", f.Dir, "/a")
-			if err := cmd.Run(); err != nil {
-				logger.Warn("添加到 IDM 失败: %s (%v)", url, err)
+			if !ok {
+				logger.Warn("添加到 IDM 失败: %s", url)
 				continue
 			}
 			added++
@@ -1249,6 +1264,19 @@ func (m *EngineManager) ExportHotWorks(ctx context.Context, count int, outputBas
 	return nil
 }
 
+// folderRowParts 计算生成下载脚本所需的展示名与相对路径
+func folderRowParts(baseDir string, f FolderExport) (displayName, relSaveDir, linksFile string) {
+	displayName = f.RelPath
+	relSaveDir, _ = filepath.Rel(baseDir, f.Dir)
+	linksFile, _ = filepath.Rel(baseDir, filepath.Join(f.Dir, consts.LinksFileName))
+	return
+}
+
+// psEscape 转义 PowerShell 双引号字符串中的引号
+func psEscape(s string) string {
+	return strings.ReplaceAll(s, `"`, "`\"")
+}
+
 // generateIDMScript 生成 idm_download.bat 脚本（放入 scriptsDir）
 // folders 按传入顺序写入脚本，调用方已按"大文件优先"排序
 func (m *EngineManager) generateIDMScript(baseDir string, folders []FolderExport, scriptsDir string) error {
@@ -1304,16 +1332,11 @@ func (m *EngineManager) generateIDMScript(baseDir string, folders []FolderExport
 
     psLines = append(psLines, `$folders = @(`)
     for _, f := range folders {
-        relSaveDir, _ := filepath.Rel(baseDir, f.Dir)
-        linksFile, _ := filepath.Rel(baseDir, filepath.Join(f.Dir, "links.txt"))
-        displayName := f.RelPath
+        displayName, relSaveDir, linksFile := folderRowParts(baseDir, f)
         if displayName == "" {
             displayName = "(根目录)"
         }
-        escName := strings.ReplaceAll(displayName, `"`, "`\"")
-        escSave := strings.ReplaceAll(relSaveDir, `"`, "`\"")
-        escLinks := strings.ReplaceAll(linksFile, `"`, "`\"")
-        psLines = append(psLines, fmt.Sprintf(`    @("%s", "%s", "%s");`, escName, escSave, escLinks))
+        psLines = append(psLines, fmt.Sprintf(`    @("%s", "%s", "%s");`, psEscape(displayName), psEscape(relSaveDir), psEscape(linksFile)))
     }
     psLines = append(psLines, `)`)
     psLines = append(psLines, ``)
@@ -1389,9 +1412,7 @@ func (m *EngineManager) generateAria2Script(baseDir string, folders []FolderExpo
 
     psLines = append(psLines, `$folders = @(`)
     for _, f := range folders {
-        relSaveDir, _ := filepath.Rel(baseDir, f.Dir)
-        linksFile, _ := filepath.Rel(baseDir, filepath.Join(f.Dir, "links.txt"))
-        displayName := f.RelPath
+        displayName, relSaveDir, linksFile := folderRowParts(baseDir, f)
         if displayName == "" {
             displayName = "(root)"
         }
@@ -1399,10 +1420,7 @@ func (m *EngineManager) generateAria2Script(baseDir string, folders []FolderExpo
         if relSaveDir != "." {
             savePath = fmt.Sprintf(`.\%s`, relSaveDir)
         }
-        escName := strings.ReplaceAll(displayName, `"`, "`\"")
-        escLinks := strings.ReplaceAll(linksFile, `"`, "`\"")
-        escSave := strings.ReplaceAll(savePath, `"`, "`\"")
-        psLines = append(psLines, fmt.Sprintf(`    @("%s", "%s", "%s");`, escName, escLinks, escSave))
+        psLines = append(psLines, fmt.Sprintf(`    @("%s", "%s", "%s");`, psEscape(displayName), psEscape(linksFile), psEscape(savePath)))
     }
     psLines = append(psLines, `)`)
     psLines = append(psLines, ``)
@@ -1465,9 +1483,7 @@ func (m *EngineManager) generateAria2Script(baseDir string, folders []FolderExpo
     shLines = append(shLines, "echo \"Make sure aria2 daemon is running on port " + rpcPort + "\"")
     shLines = append(shLines, "")
     for _, f := range folders {
-        relLinksFile, _ := filepath.Rel(baseDir, filepath.Join(f.Dir, "links.txt"))
-        relSaveDir, _ := filepath.Rel(baseDir, f.Dir)
-        displayName := f.RelPath
+        displayName, relSaveDir, relLinksFile := folderRowParts(baseDir, f)
         if displayName == "" {
             displayName = "(root)"
         }

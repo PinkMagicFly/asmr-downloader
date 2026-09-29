@@ -14,6 +14,12 @@ const DbName = "asmroner.db"
 // FailedLogName 下载错误日志文件名
 const FailedLogName = "download_errors.log"
 
+// LinksFileName 导出时每个文件夹中的链接列表文件名
+const LinksFileName = "links.txt"
+
+// DownloadScriptsDir 导出时生成的下载脚本目录名
+const DownloadScriptsDir = "download_scripts"
+
 // DefaultFolderNameFormat 默认的作品下载目录命名格式
 // 占位符: {rjid} {date} {subtitle} {title}，与历史版本的硬编码命名保持一致
 const DefaultFolderNameFormat = "{rjid}-{date}-{subtitle}-{title}"
