@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1011,6 +1012,29 @@ func (m *EngineManager) ExportLinksOnly(ctx context.Context, id string, outputBa
 	return m.ExportTracks(folderName, outputBaseDir, tracks, nil)
 }
 
+// fileEntry 待导出的文件条目
+type fileEntry struct {
+	URL  string
+	Size int64
+}
+
+// FolderExport 一个待导出的文件夹（生成下载脚本时按切片顺序处理，保证大文件优先）
+type FolderExport struct {
+	RelPath string // 相对作品目录的路径，根目录为 ""
+	Dir     string // 实际绝对路径
+}
+
+// maxEntrySize 返回文件条目中最大的文件大小
+func maxEntrySize(entries []fileEntry) int64 {
+	var max int64
+	for _, e := range entries {
+		if e.Size > max {
+			max = e.Size
+		}
+	}
+	return max
+}
+
 // ExportTracks 将音轨列表导出为 links.txt + 下载脚本。
 // selected 为 nil 表示导出全部文件；否则只导出 URL 在集合中的文件。
 // 选中后为空的文件夹不会创建。
@@ -1021,8 +1045,8 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	}
 	workOutputDir := filepath.Join(outputBaseDir, folderName)
 
-	// 递归收集每个文件夹下的文件 URL（按选中集合过滤）
-	folderFiles := make(map[string][]string)
+	// 递归收集每个文件夹下的文件（按选中集合过滤）
+	folderFiles := make(map[string][]fileEntry)
 	var collect func(ts []model.Track, relPath string)
 	collect = func(ts []model.Track, relPath string) {
 		for _, t := range ts {
@@ -1033,7 +1057,7 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 				if selected != nil && !selected[t.MediaDownloadURL] {
 					continue
 				}
-				folderFiles[relPath] = append(folderFiles[relPath], t.MediaDownloadURL)
+				folderFiles[relPath] = append(folderFiles[relPath], fileEntry{URL: t.MediaDownloadURL, Size: t.Size})
 			} else {
 				collect(t.Children, filepath.Join(relPath, t.Title))
 			}
@@ -1045,10 +1069,26 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 		return nil, "", fmt.Errorf("没有选中任何文件")
 	}
 
-	// 创建输出目录结构并写入 links.txt，同时记录文件夹路径用于生成脚本
+	// 文件夹排序：按文件夹内最大文件的大小降序（保证大文件先进入下载队列）
+	folderNames := make([]string, 0, len(folderFiles))
+	for relPath := range folderFiles {
+		folderNames = append(folderNames, relPath)
+	}
+	sort.Slice(folderNames, func(i, j int) bool {
+		return maxEntrySize(folderFiles[folderNames[i]]) > maxEntrySize(folderFiles[folderNames[j]])
+	})
+
+	// 创建输出目录结构并写入 links.txt（每个文件夹内的链接按文件大小降序）
 	stats := make(map[string]int)
-	folderPaths := make(map[string]string) // 相对路径 -> 实际绝对路径
-	for relPath, urls := range folderFiles {
+	folders := make([]FolderExport, 0, len(folderNames))
+	for _, relPath := range folderNames {
+		entries := folderFiles[relPath]
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].Size > entries[j].Size })
+		urls := make([]string, 0, len(entries))
+		for _, e := range entries {
+			urls = append(urls, e.URL)
+		}
+
 		dir := workOutputDir
 		if relPath != "" {
 			dir = filepath.Join(workOutputDir, relPath)
@@ -1062,7 +1102,7 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 			return nil, "", fmt.Errorf("写入文件 %s 失败: %w", linkFile, err)
 		}
 		stats[relPath] = len(urls)
-		folderPaths[relPath] = dir
+		folders = append(folders, FolderExport{RelPath: relPath, Dir: dir})
 	}
 	// 创建脚本文档夹
 	scriptsDir := filepath.Join(workOutputDir, "download_scripts")
@@ -1071,11 +1111,11 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	}
 
 	// 生成 IDM 批处理脚本（实际是引导 PowerShell 的 .bat）
-	if err := m.generateIDMScript(workOutputDir, folderPaths, scriptsDir); err != nil {
+	if err := m.generateIDMScript(workOutputDir, folders, scriptsDir); err != nil {
 		logger.Warn("生成 IDM 脚本失败: %v", err)
 	}
 	// 生成 Aria2 下载脚本（跨平台）
-	if err := m.generateAria2Script(workOutputDir, folderPaths, scriptsDir); err != nil {
+	if err := m.generateAria2Script(workOutputDir, folders, scriptsDir); err != nil {
 		logger.Warn("生成 Aria2 脚本失败: %v", err)
 	}
 	// 生成一键清理 links.txt 脚本
@@ -1168,7 +1208,8 @@ func (m *EngineManager) ExportHotWorks(ctx context.Context, count int, outputBas
 }
 
 // generateIDMScript 生成 idm_download.bat 脚本（放入 scriptsDir）
-func (m *EngineManager) generateIDMScript(baseDir string, folderPaths map[string]string, scriptsDir string) error {
+// folders 按传入顺序写入脚本，调用方已按"大文件优先"排序
+func (m *EngineManager) generateIDMScript(baseDir string, folders []FolderExport, scriptsDir string) error {
     ps1Path := filepath.Join(scriptsDir, "idm_download.ps1")
     var psLines []string
 
@@ -1219,30 +1260,29 @@ func (m *EngineManager) generateIDMScript(baseDir string, folderPaths map[string
     psLines = append(psLines, `}`)
     psLines = append(psLines, ``)
 
-    psLines = append(psLines, `$folders = @{`)
-    for relPath, dir := range folderPaths {
-        relSaveDir, _ := filepath.Rel(baseDir, dir)
-        linksFile, _ := filepath.Rel(baseDir, filepath.Join(dir, "links.txt"))
-        displayName := relPath
+    psLines = append(psLines, `$folders = @(`)
+    for _, f := range folders {
+        relSaveDir, _ := filepath.Rel(baseDir, f.Dir)
+        linksFile, _ := filepath.Rel(baseDir, filepath.Join(f.Dir, "links.txt"))
+        displayName := f.RelPath
         if displayName == "" {
             displayName = "(根目录)"
         }
         escName := strings.ReplaceAll(displayName, `"`, "`\"")
         escSave := strings.ReplaceAll(relSaveDir, `"`, "`\"")
         escLinks := strings.ReplaceAll(linksFile, `"`, "`\"")
-        psLines = append(psLines, fmt.Sprintf(`    "%s" = "%s|%s";`, escName, escSave, escLinks))
+        psLines = append(psLines, fmt.Sprintf(`    @("%s", "%s", "%s");`, escName, escSave, escLinks))
     }
-    psLines = append(psLines, `}`)
+    psLines = append(psLines, `)`)
     psLines = append(psLines, ``)
 
     psLines = append(psLines, `$totalAdded = 0`)
     psLines = append(psLines, `$maxRetries = 2       # 最多重试2次`)
     psLines = append(psLines, `$retryDelay = 300     # 重试间隔300毫秒`)
-    psLines = append(psLines, `foreach ($entry in $folders.GetEnumerator()) {`)
-    psLines = append(psLines, `    $name = $entry.Key`)
-    psLines = append(psLines, `    $data = $entry.Value -split '\|'`)
-    psLines = append(psLines, `    $saveDirRel = $data[0]`)
-    psLines = append(psLines, `    $linksFileRel = $data[1]`)
+    psLines = append(psLines, `foreach ($entry in $folders) {`)
+    psLines = append(psLines, `    $name = $entry[0]`)
+    psLines = append(psLines, `    $saveDirRel = $entry[1]`)
+    psLines = append(psLines, `    $linksFileRel = $entry[2]`)
     psLines = append(psLines, `    $saveDir   = if ($saveDirRel -eq ".") { $baseDir } else { Join-Path $baseDir $saveDirRel }`)
     psLines = append(psLines, `    $linksFile = Join-Path $baseDir $linksFileRel`)
     psLines = append(psLines, ``)
@@ -1296,7 +1336,7 @@ func (m *EngineManager) generateIDMScript(baseDir string, folderPaths map[string
     return os.WriteFile(batPath, append(bom, []byte(batContent)...), 0644)
 }
 
-func (m *EngineManager) generateAria2Script(baseDir string, folderPaths map[string]string, scriptsDir string) error {
+func (m *EngineManager) generateAria2Script(baseDir string, folders []FolderExport, scriptsDir string) error {
     // 1. 生成 Windows PowerShell 直接下载脚本
     ps1Path := filepath.Join(scriptsDir, "aria2_download.ps1")
     var psLines []string
@@ -1305,11 +1345,11 @@ func (m *EngineManager) generateAria2Script(baseDir string, folderPaths map[stri
     psLines = append(psLines, `Set-Location $baseDir`)
     psLines = append(psLines, `$global:foldersDone = 0`)
 
-    psLines = append(psLines, `$folders = @{`)
-    for relPath, dir := range folderPaths {
-        relSaveDir, _ := filepath.Rel(baseDir, dir)
-        linksFile, _ := filepath.Rel(baseDir, filepath.Join(dir, "links.txt"))
-        displayName := relPath
+    psLines = append(psLines, `$folders = @(`)
+    for _, f := range folders {
+        relSaveDir, _ := filepath.Rel(baseDir, f.Dir)
+        linksFile, _ := filepath.Rel(baseDir, filepath.Join(f.Dir, "links.txt"))
+        displayName := f.RelPath
         if displayName == "" {
             displayName = "(root)"
         }
@@ -1320,17 +1360,17 @@ func (m *EngineManager) generateAria2Script(baseDir string, folderPaths map[stri
         escName := strings.ReplaceAll(displayName, `"`, "`\"")
         escLinks := strings.ReplaceAll(linksFile, `"`, "`\"")
         escSave := strings.ReplaceAll(savePath, `"`, "`\"")
-        psLines = append(psLines, fmt.Sprintf(`    "%s" = @("%s", "%s");`, escName, escLinks, escSave))
+        psLines = append(psLines, fmt.Sprintf(`    @("%s", "%s", "%s");`, escName, escLinks, escSave))
     }
-    psLines = append(psLines, `}`)
+    psLines = append(psLines, `)`)
     psLines = append(psLines, ``)
 
     psLines = append(psLines, `Write-Host "Starting Aria2 direct downloads..."`)
     psLines = append(psLines, `Write-Host "===================================="`)
-    psLines = append(psLines, `foreach ($entry in $folders.GetEnumerator()) {`)
-    psLines = append(psLines, `    $name = $entry.Key`)
-    psLines = append(psLines, `    $linksFile = $entry.Value[0]`)
-    psLines = append(psLines, `    $saveDir   = $entry.Value[1]`)
+    psLines = append(psLines, `foreach ($entry in $folders) {`)
+    psLines = append(psLines, `    $name = $entry[0]`)
+    psLines = append(psLines, `    $linksFile = $entry[1]`)
+    psLines = append(psLines, `    $saveDir   = $entry[2]`)
     psLines = append(psLines, `    Write-Host "Downloading: $name"`)
 
     psLines = append(psLines, `    $commonArgs = @("--max-concurrent-downloads=2", "--max-connection-per-server=4", "--split=4", "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "--enable-http-keep-alive=false", "--check-certificate=false", "--console-log-level=notice", "--retry-wait=10", "--max-tries=5", "--timeout=30")`)
@@ -1382,10 +1422,10 @@ func (m *EngineManager) generateAria2Script(baseDir string, folderPaths map[stri
     shLines = append(shLines, "")
     shLines = append(shLines, "echo \"Make sure aria2 daemon is running on port " + rpcPort + "\"")
     shLines = append(shLines, "")
-    for relPath, dir := range folderPaths {
-        relLinksFile, _ := filepath.Rel(baseDir, filepath.Join(dir, "links.txt"))
-        relSaveDir, _ := filepath.Rel(baseDir, dir)
-        displayName := relPath
+    for _, f := range folders {
+        relLinksFile, _ := filepath.Rel(baseDir, filepath.Join(f.Dir, "links.txt"))
+        relSaveDir, _ := filepath.Rel(baseDir, f.Dir)
+        displayName := f.RelPath
         if displayName == "" {
             displayName = "(root)"
         }
