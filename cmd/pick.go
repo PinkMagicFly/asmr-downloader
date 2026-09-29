@@ -131,9 +131,10 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 		type exportRequest struct {
 			ID       string   `json:"id"`
 			Selected []string `json:"selected"`
+			RunIDM   bool     `json:"run_idm"`
 		}
 
-		// API: 按勾选结果导出
+		// API: 按勾选结果导出（可选：同时添加到 IDM 队列）
 		r.POST("/api/export", func(c *gin.Context) {
 			var req exportRequest
 			if err := c.ShouldBindJSON(&req); err != nil || len(req.Selected) == 0 {
@@ -155,7 +156,7 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 				selected[u] = true
 			}
 
-			stats, workDir, err := eng.ExportTracks(work.folderName, pickOutputDir, work.tracks, selected)
+			stats, workDir, folders, err := eng.ExportTracks(work.folderName, pickOutputDir, work.tracks, selected)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -166,10 +167,23 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 				total += n
 			}
 			logger.Done("%s 已导出 %d 个链接 -> %s", cacheKey, total, workDir)
-			c.JSON(http.StatusOK, gin.H{
+
+			resp := gin.H{
 				"dir":   workDir,
 				"count": total,
-			})
+			}
+			// 直接调用 IDMan.exe 将任务添加到 IDM 队列（不经过脚本）
+			if req.RunIDM {
+				added, err := eng.EnqueueIDM(folders)
+				if err != nil {
+					logger.Warn("添加到 IDM 失败: %v", err)
+					resp["idm_error"] = err.Error()
+				} else {
+					logger.Done("%s 已添加 %d 个任务到 IDM 队列", cacheKey, added)
+					resp["idm_added"] = added
+				}
+			}
+			c.JSON(http.StatusOK, resp)
 		})
 
 		addr := fmt.Sprintf(":%d", pickPort)

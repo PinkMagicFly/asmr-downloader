@@ -88,7 +88,7 @@ go build -o asmroner
 ./asmroner pick RJ01526160            # 启动网站并直接加载该作品
 ./asmroner pick -o ./downloads        # 指定输出目录，Ctrl+C 停止服务
 
-# 下载完成后递归清理所有 links.txt
+# 下载完成后递归清理所有 links.txt 和下载脚本
 ./asmroner clean ./downloads/RJ01526160-xxx
 
 # Web 播放界面
@@ -214,8 +214,8 @@ download_jitter_max = 5000  # 下载请求最大随机抖动（ms）
 | `list` | `-d` | 查看作品资源目录内的文件类型及数量；`-d/--detail` 列出所有文件 |
 | `download` | `-d`, `-n`, `-f` | 下载目录、hot100 模式下载数量、强制覆盖已下载文件 |
 | `export` | `-o`, `-n` | 输出目录、hot100 模式导出数量 |
-| `pick` | `[RJID]`, `-o`, `-p` | 启动本地网站：搜索 RJ 号、网页勾选文件后导出，下载交给 IDM |
-| `clean` | — | 递归删除目录下所有 links.txt |
+| `pick` | `[RJID]`, `-o`, `-p` | 启动本地网站：搜索 RJ 号、网页勾选文件后导出（可选同时添加到 IDM 队列），下载交给 IDM |
+| `clean` | — | 递归删除目录下所有 links.txt 和 download_scripts 目录 |
 | `sync` | — | 仅同步元数据（自动比对本地/远端，显示同步率） |
 | `sync download` | `-d` | 同步后按容量限制逐批下载，含状态跟踪 |
 | `sync retry` | `-d` | 清空旧目录后重试下载失败的作品 |

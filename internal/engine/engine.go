@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -1009,7 +1010,8 @@ func (m *EngineManager) ExportLinksOnly(ctx context.Context, id string, outputBa
 		workInfo.Title,
 	)
 
-	return m.ExportTracks(folderName, outputBaseDir, tracks, nil)
+	stats, workDir, _, err := m.ExportTracks(folderName, outputBaseDir, tracks, nil)
+	return stats, workDir, err
 }
 
 // fileEntry 待导出的文件条目
@@ -1038,7 +1040,8 @@ func maxEntrySize(entries []fileEntry) int64 {
 // ExportTracks 将音轨列表导出为 links.txt + 下载脚本。
 // selected 为 nil 表示导出全部文件；否则只导出 URL 在集合中的文件。
 // 选中后为空的文件夹不会创建。
-func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tracks []model.Track, selected map[string]bool) (map[string]int, string, error) {
+// 返回的 folders 按"大文件优先"排序，可用于直接调用 EnqueueIDM。
+func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tracks []model.Track, selected map[string]bool) (map[string]int, string, []FolderExport, error) {
 	// 确定输出根目录
 	if outputBaseDir == "" {
 		outputBaseDir = "."
@@ -1066,7 +1069,7 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	collect(tracks, "")
 
 	if len(folderFiles) == 0 {
-		return nil, "", fmt.Errorf("没有选中任何文件")
+		return nil, "", nil, fmt.Errorf("没有选中任何文件")
 	}
 
 	// 文件夹排序：按文件夹内最大文件的大小降序（保证大文件先进入下载队列）
@@ -1094,12 +1097,12 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 			dir = filepath.Join(workOutputDir, relPath)
 		}
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, "", fmt.Errorf("创建目录 %s 失败: %w", dir, err)
+			return nil, "", nil, fmt.Errorf("创建目录 %s 失败: %w", dir, err)
 		}
 		linkFile := filepath.Join(dir, "links.txt")
 		content := strings.Join(urls, "\n")
 		if err := os.WriteFile(linkFile, []byte(content), 0644); err != nil {
-			return nil, "", fmt.Errorf("写入文件 %s 失败: %w", linkFile, err)
+			return nil, "", nil, fmt.Errorf("写入文件 %s 失败: %w", linkFile, err)
 		}
 		stats[relPath] = len(urls)
 		folders = append(folders, FolderExport{RelPath: relPath, Dir: dir})
@@ -1107,7 +1110,7 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	// 创建脚本文档夹
 	scriptsDir := filepath.Join(workOutputDir, "download_scripts")
 	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
-		return nil, "", fmt.Errorf("创建脚本目录失败: %w", err)
+		return nil, "", nil, fmt.Errorf("创建脚本目录失败: %w", err)
 	}
 
 	// 生成 IDM 批处理脚本（实际是引导 PowerShell 的 .bat）
@@ -1126,24 +1129,63 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	logger.Info("已导出链接文件，共 %d 个文件夹", len(folderFiles))
 	logger.Info("作品目录: %s", workOutputDir)
 
-	return stats, workOutputDir, nil
+	return stats, workOutputDir, folders, nil
 }
 
 // generateCleanupScript 在作品目录根目录生成 cleanup_links.bat，
-// 用于下载完成后一键递归删除所有 links.txt
+// 用于下载完成后一键递归删除所有 links.txt 和下载脚本（保留自身）
 func generateCleanupScript(workOutputDir string) error {
 	batPath := filepath.Join(workOutputDir, "cleanup_links.bat")
 	batLines := []string{
 		"@echo off",
 		"chcp 65001 >nul",
-		"echo 正在递归清理 links.txt ...",
+		"echo 正在递归清理 links.txt 和下载脚本 ...",
 		"for /r \"%~dp0\" %%f in (links.txt) do if exist \"%%f\" del /q \"%%f\"",
+		"if exist \"%~dp0download_scripts\" rd /s /q \"%~dp0download_scripts\"",
 		"echo 清理完成",
 		"pause",
 	}
 	content := strings.Join(batLines, "\r\n")
 	bom := []byte{0xEF, 0xBB, 0xBF}
 	return os.WriteFile(batPath, append(bom, []byte(content)...), 0644)
+}
+
+// EnqueueIDM 按 folders 顺序（大文件优先）把 links.txt 中的链接逐条
+// 添加到 IDM 下载队列，返回成功添加的任务数。
+// 需要配置 downloader.idm_path 指向 IDMan.exe。
+func (m *EngineManager) EnqueueIDM(folders []FolderExport) (int, error) {
+	idmPath := ""
+	if m.Config != nil {
+		idmPath = m.Config.Downloader.IdmPath
+	}
+	if idmPath == "" {
+		return 0, fmt.Errorf("未配置 IDM 路径，请运行 'asmroner config' 设置 idm_path")
+	}
+	if _, err := os.Stat(idmPath); err != nil {
+		return 0, fmt.Errorf("IDM 路径不存在: %s", idmPath)
+	}
+
+	added := 0
+	for _, f := range folders {
+		data, err := os.ReadFile(filepath.Join(f.Dir, "links.txt"))
+		if err != nil {
+			logger.Warn("读取 %s 的 links.txt 失败: %v", f.RelPath, err)
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			url := strings.TrimSpace(line)
+			if url == "" {
+				continue
+			}
+			cmd := exec.Command(idmPath, "/d", url, "/p", f.Dir, "/a")
+			if err := cmd.Run(); err != nil {
+				logger.Warn("添加到 IDM 失败: %s (%v)", url, err)
+				continue
+			}
+			added++
+		}
+	}
+	return added, nil
 }
 
 // ExportHotWorks 导出热门榜前 count 个作品的下载链接（增强版：显示标题）

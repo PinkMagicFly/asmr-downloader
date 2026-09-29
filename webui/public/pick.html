@@ -55,6 +55,12 @@
   }
   .toolbar .submit:hover { background: #66b1ff; }
   .toolbar .submit:disabled { background: #a0cfff; cursor: not-allowed; }
+  .toolbar .submit-secondary {
+    background: #fff; border-color: #409eff; color: #409eff;
+    padding: 8px 22px; font-size: 14px;
+  }
+  .toolbar .submit-secondary:hover { background: #ecf5ff; }
+  .toolbar .submit-secondary:disabled { border-color: #a0cfff; color: #a0cfff; cursor: not-allowed; }
   .tree {
     display: none; background: #fff; border-radius: 10px; padding: 16px 20px;
     box-shadow: 0 2px 8px rgba(0,0,0,.06);
@@ -103,7 +109,8 @@
     <button onclick="invertAll()">反选</button>
     <span class="ext-group" id="extGroup"></span>
     <span class="counter" id="counter"></span>
-    <button class="submit" id="submitBtn" onclick="submitSelection()">生成下载任务</button>
+    <button class="submit-secondary" id="exportOnlyBtn" onclick="submitSelection(false)">仅导出</button>
+    <button class="submit" id="submitBtn" onclick="submitSelection(true)">导出并添加到 IDM</button>
   </div>
   <div class="tree" id="tree"></div>
   <div class="placeholder" id="placeholder">输入 RJ 号搜索作品，勾选要下载的文件后交给 IDM 下载</div>
@@ -287,7 +294,10 @@ async function searchWork() {
     tree.style.display = 'block';
     const submitBtn = document.getElementById('submitBtn');
     submitBtn.disabled = false;
-    submitBtn.textContent = '生成下载任务';
+    submitBtn.textContent = '导出并添加到 IDM';
+    const exportOnlyBtn = document.getElementById('exportOnlyBtn');
+    exportOnlyBtn.disabled = false;
+    exportOnlyBtn.textContent = '仅导出';
     renderExtButtons();
     updateCounter();
   } catch (e) {
@@ -298,33 +308,44 @@ async function searchWork() {
   }
 }
 
-async function submitSelection() {
+async function submitSelection(runIdm) {
   const selected = fileNodes.filter(f => f.cb.checked).map(f => f.url);
   if (selected.length === 0) {
     alert('请至少勾选一个文件');
     return;
   }
-  const btn = document.getElementById('submitBtn');
+  const btn = runIdm ? document.getElementById('submitBtn') : document.getElementById('exportOnlyBtn');
+  const btnText = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '正在生成...';
+  btn.textContent = runIdm ? '正在导出并添加到 IDM...' : '正在导出...';
   try {
     const resp = await fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: currentId, selected })
+      body: JSON.stringify({ id: currentId, selected, run_idm: runIdm })
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || '导出失败');
-    showResult(true, `✅ ${currentId} 生成完成，共 <b>${data.count}</b> 个链接<br>` +
-      `作品目录：${data.dir}<br>` +
-      `双击 <b>download_scripts\\idm_download.bat</b> 将任务添加到 IDM；` +
-      `下载完成后双击 <b>cleanup_links.bat</b> 一键清理 links.txt<br>` +
-      `可以继续搜索下一个作品`);
-    btn.textContent = '已生成 ✓';
+    let msg = `✅ ${currentId} 导出完成，共 <b>${data.count}</b> 个链接<br>作品目录：${data.dir}<br>`;
+    if (runIdm) {
+      if (data.idm_error) {
+        showResult(false, `⚠️ 导出成功，但添加到 IDM 失败：${data.idm_error}<br>作品目录：${data.dir}（可手动双击 download_scripts\\idm_download.bat）`);
+        btn.disabled = false;
+        btn.textContent = btnText;
+        return;
+      }
+      msg += `已按"大文件优先"顺序将 <b>${data.idm_added}</b> 个任务添加到 IDM 队列，请打开 IDM 查看<br>`;
+    } else {
+      msg += `双击 <b>download_scripts\\idm_download.bat</b> 可将任务添加到 IDM<br>`;
+    }
+    msg += `下载完成后双击 <b>cleanup_links.bat</b> 一键清理 links.txt 和下载脚本<br>可以继续搜索下一个作品`;
+    showResult(true, msg);
+    btn.disabled = false;
+    btn.textContent = btnText;
   } catch (e) {
     showResult(false, '❌ ' + e.message);
     btn.disabled = false;
-    btn.textContent = '生成下载任务';
+    btn.textContent = btnText;
   }
 }
 
