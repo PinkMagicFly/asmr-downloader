@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -178,6 +179,52 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 				}
 			}
 			c.JSON(http.StatusOK, resp)
+		})
+
+		// 输出根目录（清理脚本和作品目录的共同父目录）
+		outputRoot := pickOutputDir
+		if outputRoot == "" {
+			outputRoot = "."
+		}
+
+		// API: 清理指定作品的 links.txt 和下载脚本
+		r.POST("/api/clean", func(c *gin.Context) {
+			var req struct {
+				ID string `json:"id"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效"})
+				return
+			}
+			cacheKey := strings.TrimSpace(req.ID)
+			if _, _, number, err := utils.IsValidDlsiteID(cacheKey); err == nil {
+				cacheKey = number
+			}
+			cacheMu.Lock()
+			work, ok := workCache[cacheKey]
+			cacheMu.Unlock()
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "请先搜索该作品"})
+				return
+			}
+
+			target := filepath.Join(outputRoot, work.folderName)
+			if _, err := os.Stat(target); os.IsNotExist(err) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "作品目录不存在，未执行任何操作: " + target})
+				return
+			}
+
+			linkCount, scriptDirCount, err := utils.CleanExportArtifacts(target)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "清理失败: " + err.Error()})
+				return
+			}
+			logger.Done("%s 清理完成: %d 个 links.txt，%d 个 download_scripts 目录", cacheKey, linkCount, scriptDirCount)
+			c.JSON(http.StatusOK, gin.H{
+				"dir":     target,
+				"links":   linkCount,
+				"scripts": scriptDirCount,
+			})
 		})
 
 		addr := fmt.Sprintf(":%d", pickPort)

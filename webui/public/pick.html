@@ -61,6 +61,12 @@
   }
   .toolbar .submit-secondary:hover { background: #ecf5ff; }
   .toolbar .submit-secondary:disabled { border-color: #a0cfff; color: #a0cfff; cursor: not-allowed; }
+  .toolbar .submit-danger {
+    background: #fff; border-color: #f56c6c; color: #f56c6c;
+    padding: 8px 22px; font-size: 14px;
+  }
+  .toolbar .submit-danger:hover { background: #fef0f0; }
+  .toolbar .submit-danger:disabled { border-color: #fab6b6; color: #fab6b6; cursor: not-allowed; }
   .tree {
     display: none; background: #fff; border-radius: 10px; padding: 16px 20px;
     box-shadow: 0 2px 8px rgba(0,0,0,.06);
@@ -111,6 +117,7 @@
     <span class="counter" id="counter"></span>
     <button class="submit-secondary" id="exportOnlyBtn" onclick="submitSelection(false)">仅导出</button>
     <button class="submit" id="submitBtn" onclick="submitSelection(true)">导出并添加到 IDM</button>
+    <button class="submit-danger" id="cleanBtn" onclick="cleanWork()">清理该作品</button>
   </div>
   <div class="tree" id="tree"></div>
   <div class="placeholder" id="placeholder">输入 RJ 号搜索作品，勾选要下载的文件后交给 IDM 下载</div>
@@ -335,13 +342,44 @@ async function submitSelection(runIdm) {
     } else {
       msg += `双击 <b>download_scripts\\idm_download.bat</b> 可将任务添加到 IDM<br>`;
     }
-    msg += `下载完成后双击 <b>cleanup_links.bat</b> 一键清理 links.txt 和下载脚本<br>可以继续搜索下一个作品`;
+    msg += `下载完成后点上方 <b>"清理该作品"</b> 按钮即可清理 links.txt 和下载脚本（也可手动运行输出根目录的 cleanup_links.bat）<br>可以继续搜索下一个作品`;
     showResult(true, msg);
   } catch (e) {
     showResult(false, '❌ ' + e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = btnText;
+  }
+}
+
+async function cleanWork() {
+  if (!currentId) return;
+  if (!confirm(`确认清理 ${currentId} 作品目录中的所有 links.txt 和下载脚本？`)) return;
+  const btn = document.getElementById('cleanBtn');
+  btn.disabled = true;
+  btn.textContent = '清理中...';
+  try {
+    const resp = await fetch('/api/clean', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: currentId })
+    });
+    const data = await resp.json();
+    if (resp.status === 404) {
+      showResult(false, '⚠️ ' + data.error);
+      return;
+    }
+    if (!resp.ok) throw new Error(data.error || '清理失败');
+    if (data.links === 0 && data.scripts === 0) {
+      showResult(true, `ℹ️ ${currentId} 没有需要清理的内容（目录中没有 links.txt 或下载脚本）`);
+      return;
+    }
+    showResult(true, `✅ ${currentId} 清理完成：删除 <b>${data.links}</b> 个 links.txt、<b>${data.scripts}</b> 个下载脚本目录<br>目录：${data.dir}`);
+  } catch (e) {
+    showResult(false, '❌ ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '清理该作品';
   }
 }
 

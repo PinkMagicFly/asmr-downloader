@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"asmroner/internal/consts"
 	"asmroner/internal/logger"
+	"asmroner/internal/utils"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -37,41 +35,10 @@ clean 命令递归清理指定目录（含所有子目录）中的：
 			return
 		}
 
-		linkCount := 0
-		scriptDirCount := 0
-		// 先收集 download_scripts 目录，避免遍历时删除影响 WalkDir
-		var scriptDirs []string
-		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				if d.Name() == consts.DownloadScriptsDir {
-					scriptDirs = append(scriptDirs, path)
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d.Name() == consts.LinksFileName {
-				if err := os.Remove(path); err != nil {
-					logger.Warn("删除失败 %s: %v", path, err)
-					return nil
-				}
-				linkCount++
-			}
-			return nil
-		})
+		linkCount, scriptDirCount, err := utils.CleanExportArtifacts(dir)
 		if err != nil {
 			logger.Fail("遍历目录失败: %v", err)
 			return
-		}
-
-		for _, sd := range scriptDirs {
-			if err := os.RemoveAll(sd); err != nil {
-				logger.Warn("删除目录失败 %s: %v", sd, err)
-				continue
-			}
-			scriptDirCount++
 		}
 
 		if linkCount == 0 && scriptDirCount == 0 {

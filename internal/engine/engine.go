@@ -1133,8 +1133,8 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	if err := m.generateAria2Script(workOutputDir, folders, scriptsDir); err != nil {
 		logger.Warn("生成 Aria2 脚本失败: %v", err)
 	}
-	// 生成一键清理 links.txt 脚本
-	if err := generateCleanupScript(workOutputDir); err != nil {
+	// 在输出根目录生成通用清理脚本（幂等，可重复导出）
+	if err := EnsureCleanupScript(outputBaseDir); err != nil {
 		logger.Warn("生成清理脚本失败: %v", err)
 	}
 
@@ -1144,16 +1144,34 @@ func (m *EngineManager) ExportTracks(folderName string, outputBaseDir string, tr
 	return workOutputDir, folders, nil
 }
 
-// generateCleanupScript 在作品目录根目录生成 cleanup_links.bat，
-// 用于下载完成后一键递归删除所有 links.txt 和下载脚本（保留自身）
-func generateCleanupScript(workOutputDir string) error {
-	batPath := filepath.Join(workOutputDir, "cleanup_links.bat")
+// EnsureCleanupScript 在输出根目录生成通用清理脚本 cleanup_links.bat，
+// 接受一个作品文件夹名参数，清理其中的 links.txt 和下载脚本；
+// 目录不存在时仅提示，不执行任何操作。脚本位于作品目录之外，清理不影响自身。
+func EnsureCleanupScript(outputBaseDir string) error {
+	if outputBaseDir == "" {
+		outputBaseDir = "."
+	}
+	if err := os.MkdirAll(outputBaseDir, 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+	batPath := filepath.Join(outputBaseDir, "cleanup_links.bat")
 	batLines := []string{
 		"@echo off",
 		"chcp 65001 >nul",
-		"echo 正在递归清理 links.txt 和下载脚本 ...",
-		"for /r \"%~dp0\" %%f in (links.txt) do if exist \"%%f\" del /q \"%%f\"",
-		"if exist \"%~dp0download_scripts\" rd /s /q \"%~dp0download_scripts\"",
+		`if "%~1"=="" (`,
+		`    echo 用法: cleanup_links.bat "作品文件夹名"`,
+		"    pause",
+		"    exit /b 1",
+		")",
+		`set "target=%~dp0%~1"`,
+		`if not exist "%target%" (`,
+		`    echo 目录不存在: %~1，未执行任何操作`,
+		"    pause",
+		"    exit /b 1",
+		")",
+		"echo 正在清理 %~1 ...",
+		`for /r "%target%" %%f in (` + consts.LinksFileName + `) do if exist "%%f" del /q "%%f"`,
+		`if exist "%target%\` + consts.DownloadScriptsDir + `" rd /s /q "%target%\` + consts.DownloadScriptsDir + `"`,
 		"echo 清理完成",
 		"pause",
 	}

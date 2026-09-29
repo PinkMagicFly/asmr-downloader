@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand"
 	"net/http"
 	"os"
@@ -281,4 +282,39 @@ func GetDirSize(path string) (int64, error) {
 		return nil
 	})
 	return size, err
+}
+
+// CleanExportArtifacts 递归清理目录下所有 links.txt 和 download_scripts 目录，
+// 返回删除的 links.txt 数量和 download_scripts 目录数量。
+func CleanExportArtifacts(root string) (linkCount int, scriptDirCount int, err error) {
+	// 先收集 download_scripts 目录，避免遍历时删除影响 WalkDir
+	var scriptDirs []string
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == consts.DownloadScriptsDir {
+				scriptDirs = append(scriptDirs, path)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == consts.LinksFileName {
+			if err := os.Remove(path); err == nil {
+				linkCount++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return linkCount, scriptDirCount, err
+	}
+
+	for _, sd := range scriptDirs {
+		if err := os.RemoveAll(sd); err == nil {
+			scriptDirCount++
+		}
+	}
+	return linkCount, scriptDirCount, nil
 }

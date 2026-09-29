@@ -90,6 +90,8 @@ go build -o asmroner
 
 # 下载完成后递归清理所有 links.txt 和下载脚本
 ./asmroner clean ./downloads/RJ01526160-xxx
+# 或在输出根目录双击通用脚本（参数为作品文件夹名）
+cleanup_links.bat "RJ01526160-xxx"
 
 # Web 播放界面
 ./asmroner listen -p 8080 ./syncdata
