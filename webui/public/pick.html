@@ -45,6 +45,10 @@
   }
   .toolbar button:hover { border-color: #409eff; color: #409eff; }
   .toolbar .counter { margin-left: auto; font-size: 13px; color: #909399; }
+  .ext-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .ext-group .ext-label { font-size: 12px; color: #909399; }
+  .ext-group button.audio { border-color: #b3e19d; color: #67c23a; }
+  .ext-group button.video { border-color: #f5dab1; color: #e6a23c; }
   .toolbar .submit {
     background: #409eff; border-color: #409eff; color: #fff;
     padding: 8px 22px; font-size: 14px;
@@ -96,7 +100,7 @@
     <button onclick="setAll(true)">全选</button>
     <button onclick="setAll(false)">全不选</button>
     <button onclick="invertAll()">反选</button>
-    <button onclick="selectAudioOnly()">只选音频</button>
+    <span class="ext-group" id="extGroup"></span>
     <span class="counter" id="counter"></span>
     <button class="submit" id="submitBtn" onclick="submitSelection()">生成下载任务</button>
   </div>
@@ -201,10 +205,37 @@ function invertAll() {
   updateCounter();
 }
 
-function selectAudioOnly() {
-  fileNodes.forEach(f => { f.cb.checked = AUDIO_EXT.includes(f.ext); });
+function selectExtOnly(ext) {
+  fileNodes.forEach(f => { f.cb.checked = f.ext === ext; });
   document.querySelectorAll('#tree li.node').forEach(updateAncestors);
   updateCounter();
+}
+
+// 根据文件树中实际出现的后缀，动态生成快捷筛选按钮
+function renderExtButtons() {
+  const group = document.getElementById('extGroup');
+  group.innerHTML = '';
+  const counts = {};
+  fileNodes.forEach(f => {
+    const key = f.ext || '(无后缀)';
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  const exts = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  if (exts.length === 0) return;
+  const label = document.createElement('span');
+  label.className = 'ext-label';
+  label.textContent = '按类型:';
+  group.appendChild(label);
+  exts.forEach(ext => {
+    const btn = document.createElement('button');
+    if (AUDIO_EXT.includes(ext)) btn.className = 'audio';
+    else if (VIDEO_EXT.includes(ext)) btn.className = 'video';
+    const display = ext === '(无后缀)' ? ext : ext.slice(1).toUpperCase();
+    btn.textContent = `${display} (${counts[ext]})`;
+    btn.title = `只选中 ${display} 文件`;
+    btn.onclick = () => selectExtOnly(ext);
+    group.appendChild(btn);
+  });
 }
 
 function showResult(ok, html) {
@@ -244,6 +275,7 @@ async function searchWork() {
     const submitBtn = document.getElementById('submitBtn');
     submitBtn.disabled = false;
     submitBtn.textContent = '生成下载任务';
+    renderExtButtons();
     updateCounter();
   } catch (e) {
     showResult(false, '❌ ' + e.message);
