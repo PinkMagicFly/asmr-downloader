@@ -1199,10 +1199,17 @@ func (m *EngineManager) EnqueueIDM(folders []FolderExport) (int, error) {
 	const maxRetries = 2 // 与生成的 idm_download.ps1 保持一致的重试策略
 	added := 0
 	for _, f := range folders {
+		// 必须传绝对路径：IDM 以自身进程的工作目录解析相对路径，
+		// 会导致下载完成后无法移动到目标位置，文件滞留 DwnlData 临时目录
+		absDir, err := filepath.Abs(f.Dir)
+		if err != nil {
+			logger.Warn("解析保存路径失败: %s: %v", f.Dir, err)
+			continue
+		}
 		for _, url := range f.URLs {
 			ok := false
 			for retry := 0; retry <= maxRetries; retry++ {
-				cmd := exec.Command(idmPath, "/d", url, "/p", f.Dir, "/a")
+				cmd := exec.Command(idmPath, "/d", url, "/p", absDir, "/a")
 				if err := cmd.Run(); err == nil {
 					ok = true
 					break
