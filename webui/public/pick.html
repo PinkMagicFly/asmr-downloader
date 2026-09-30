@@ -49,6 +49,11 @@
   .ext-group .ext-label { font-size: 12px; color: #909399; }
   .ext-group button.audio { border-color: #b3e19d; color: #67c23a; }
   .ext-group button.video { border-color: #f5dab1; color: #e6a23c; }
+  /* 开关状态：高亮=该类型已勾选 */
+  .ext-group button.active { background: #409eff; border-color: #409eff; color: #fff; }
+  .ext-group button.active.audio { background: #67c23a; border-color: #67c23a; color: #fff; }
+  .ext-group button.active.video { background: #e6a23c; border-color: #e6a23c; color: #fff; }
+  .ext-group button.partial { border-style: dashed; font-weight: bold; }
   .toolbar .submit {
     background: #409eff; border-color: #409eff; color: #fff;
     padding: 8px 22px; font-size: 14px;
@@ -216,6 +221,7 @@ function updateCounter() {
   const total = fileNodes.length;
   const sel = fileNodes.filter(f => f.cb.checked).length;
   document.getElementById('counter').textContent = `已选 ${sel} / ${total} 个文件`;
+  syncExtButtons();
 }
 
 function setAll(v) {
@@ -231,13 +237,27 @@ function invertAll() {
   updateCounter();
 }
 
-function selectExtOnly(ext) {
-  fileNodes.forEach(f => { f.cb.checked = f.ext === ext; });
+// 后缀按钮开关：全选→取消全选，否则全选
+function toggleExt(ext) {
+  const nodes = fileNodes.filter(f => f.ext === ext);
+  const allChecked = nodes.every(f => f.cb.checked);
+  nodes.forEach(f => { f.cb.checked = !allChecked; });
   refreshFolders();
   updateCounter();
 }
 
-// 根据文件树中实际出现的后缀，动态生成快捷筛选按钮
+// 同步后缀按钮的高亮状态：全选=active，部分选中=partial，全不选=无样式
+function syncExtButtons() {
+  document.querySelectorAll('#extGroup button[data-ext]').forEach(btn => {
+    const ext = btn.dataset.ext;
+    const nodes = fileNodes.filter(f => f.ext === ext);
+    const checked = nodes.filter(f => f.cb.checked).length;
+    btn.classList.toggle('active', checked === nodes.length && nodes.length > 0);
+    btn.classList.toggle('partial', checked > 0 && checked < nodes.length);
+  });
+}
+
+// 根据文件树中实际出现的后缀，动态生成快捷开关按钮
 function renderExtButtons() {
   const group = document.getElementById('extGroup');
   group.innerHTML = '';
@@ -254,14 +274,16 @@ function renderExtButtons() {
   group.appendChild(label);
   exts.forEach(ext => {
     const btn = document.createElement('button');
-    if (AUDIO_EXT.includes(ext)) btn.className = 'audio';
-    else if (VIDEO_EXT.includes(ext)) btn.className = 'video';
+    if (AUDIO_EXT.includes(ext)) btn.classList.add('audio');
+    else if (VIDEO_EXT.includes(ext)) btn.classList.add('video');
     const display = ext === '(无后缀)' ? ext : ext.slice(1).toUpperCase();
     btn.textContent = `${display} (${counts[ext]})`;
-    btn.title = `只选中 ${display} 文件`;
-    btn.onclick = () => selectExtOnly(ext);
+    btn.title = `点击开关 ${display} 文件的选中状态`;
+    btn.dataset.ext = ext;
+    btn.onclick = () => toggleExt(ext);
     group.appendChild(btn);
   });
+  syncExtButtons();
 }
 
 function showResult(ok, html) {
