@@ -195,7 +195,7 @@ function buildNode(track) {
     size.textContent = formatSize(track.size);
     label.appendChild(size);
     li.appendChild(label);
-    fileNodes.push({ cb, url: track.mediaDownloadUrl, ext });
+    fileNodes.push({ cb, url: track.mediaDownloadUrl, ext, size: track.size || 0 });
     cb.addEventListener('change', () => { refreshFolders(); updateCounter(); });
     return { el: li, fileCbs: [cb] };
   }
@@ -219,8 +219,11 @@ function refreshFolders() {
 
 function updateCounter() {
   const total = fileNodes.length;
-  const sel = fileNodes.filter(f => f.cb.checked).length;
-  document.getElementById('counter').textContent = `已选 ${sel} / ${total} 个文件`;
+  const sel = fileNodes.filter(f => f.cb.checked);
+  const totalSize = fileNodes.reduce((s, f) => s + f.size, 0);
+  const selSize = sel.reduce((s, f) => s + f.size, 0);
+  document.getElementById('counter').textContent =
+    `已选 ${sel.length} / ${total} 个文件 · ${formatSize(selSize)} / 共 ${formatSize(totalSize)}`;
   syncExtButtons();
 }
 
