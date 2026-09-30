@@ -86,6 +86,12 @@
   .node label:hover { background: #f0f7ff; }
   .node input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; accent-color: #409eff; }
   .icon { flex-shrink: 0; }
+  .toggle {
+    flex-shrink: 0; width: 16px; cursor: pointer; user-select: none;
+    color: #909399; font-size: 12px; text-align: center;
+  }
+  .toggle:hover { color: #409eff; }
+  .toggle-spacer { flex-shrink: 0; width: 16px; }
   .fname { word-break: break-all; }
   .ext {
     flex-shrink: 0; font-size: 11px; color: #909399; background: #f4f4f5;
@@ -118,6 +124,8 @@
     <button onclick="setAll(true)">全选</button>
     <button onclick="setAll(false)">全不选</button>
     <button onclick="invertAll()">反选</button>
+    <button onclick="collapseAll(false)">全部展开</button>
+    <button onclick="collapseAll(true)">全部折叠</button>
     <span class="ext-group" id="extGroup"></span>
     <span class="counter" id="counter"></span>
     <button class="submit-secondary" id="exportOnlyBtn" onclick="submitSelection(false)">仅导出</button>
@@ -174,6 +182,18 @@ function buildNode(track) {
       childCbs.push(...node.fileCbs);
     });
     li.appendChild(ul);
+    // 折叠箭头（不触发勾选框）
+    const toggle = document.createElement('span');
+    toggle.className = 'toggle';
+    toggle.textContent = '▾';
+    toggle.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const collapsed = ul.style.display === 'none';
+      ul.style.display = collapsed ? '' : 'none';
+      toggle.textContent = collapsed ? '▾' : '▸';
+    });
+    label.insertBefore(toggle, label.firstChild);
     // 父级勾选级联到所有子孙文件
     cb.addEventListener('change', () => {
       childCbs.forEach(c => { c.checked = cb.checked; });
@@ -183,6 +203,10 @@ function buildNode(track) {
     return { el: li, fileCbs: childCbs };
   } else {
     icon.textContent = '📄';
+    // 与文件夹箭头对齐的占位
+    const spacer = document.createElement('span');
+    spacer.className = 'toggle-spacer';
+    label.insertBefore(spacer, label.firstChild);
     const ext = getExt(track.title);
     if (ext) {
       const badge = document.createElement('span');
@@ -215,6 +239,16 @@ function refreshFolders() {
     folderCb.checked = checked === boxes.length;
     folderCb.indeterminate = checked > 0 && checked < boxes.length;
   }
+}
+
+// 全部展开/折叠
+function collapseAll(collapsed) {
+  document.querySelectorAll('#tree li.node > ul').forEach(ul => {
+    ul.style.display = collapsed ? 'none' : '';
+  });
+  document.querySelectorAll('#tree .toggle').forEach(t => {
+    t.textContent = collapsed ? '▸' : '▾';
+  });
 }
 
 function updateCounter() {
