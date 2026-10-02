@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -187,6 +188,50 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 			outputRoot = "."
 		}
 
+		// API: 弹出系统文件夹选择框，返回用户选择的目录（取消返回 204）
+		r.POST("/api/browse-folder", func(c *gin.Context) {
+			dir, err := browseFolderDialog()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "打开文件夹选择框失败: " + err.Error()})
+				return
+			}
+			if dir == "" {
+				c.Status(http.StatusNoContent)
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"dir": dir})
+		})
+
+		// API: 整理目录中的媒体文件（图片/视频/音频分类移动到子文件夹）
+		r.POST("/api/organize", func(c *gin.Context) {
+			var req struct {
+				Dir string `json:"dir"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Dir) == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效：缺少目录"})
+				return
+			}
+			absDir, err := filepath.Abs(strings.TrimSpace(req.Dir))
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "目录路径无效: " + err.Error()})
+				return
+			}
+			res, err := utils.OrganizeMediaFiles(absDir)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			logger.Done("整理目录 %s 完成: 图片 %d, 视频 %d, 音频 %d, 重名标记 %d",
+				absDir, res.Images, res.Videos, res.Audios, res.Dupes)
+			c.JSON(http.StatusOK, gin.H{
+				"dir":    absDir,
+				"images": res.Images,
+				"videos": res.Videos,
+				"audios": res.Audios,
+				"dupes":  res.Dupes,
+			})
+		})
+
 		// API: 清理指定作品的 links.txt 和下载脚本
 		r.POST("/api/clean", func(c *gin.Context) {
 			var req struct {
@@ -267,6 +312,30 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 			log.Fatalf("服务器强制关闭: %v", err)
 		}
 	},
+}
+
+// browseFolderDialog 弹出 Windows 原生文件夹选择框（PowerShell FolderBrowserDialog），
+// 返回选中的目录绝对路径；用户取消时返回空字符串。
+// 该调用会阻塞直到用户关闭对话框，TopMost 保证窗口在最前。
+func browseFolderDialog() (string, error) {
+	script := `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.FolderBrowserDialog
+$f.Description = '选择要整理的目录'
+$f.ShowNewFolderButton = $true
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$null = $owner.Handle
+$result = $f.ShowDialog($owner)
+$owner.Dispose()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($f.SelectedPath) }
+`
+	out, err := exec.Command("powershell", "-NoProfile", "-STA", "-Command", script).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func init() {

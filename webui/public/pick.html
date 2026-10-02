@@ -27,6 +27,11 @@
   }
   .search-bar button:hover { background: #66b1ff; }
   .search-bar button:disabled { background: #a0cfff; cursor: not-allowed; }
+  .search-bar button.secondary {
+    background: #fff; color: #409eff; border: 1px solid #409eff;
+  }
+  .search-bar button.secondary:hover { background: #ecf5ff; }
+  .search-bar button.secondary:disabled { border-color: #a0cfff; color: #a0cfff; background: #fff; }
   .header {
     display: none; background: #fff; border-radius: 10px; padding: 20px 24px;
     box-shadow: 0 2px 8px rgba(0,0,0,.06); margin-bottom: 16px;
@@ -114,6 +119,7 @@
   <div class="search-bar">
     <input id="rjInput" type="text" placeholder="输入 RJ 号，例如 RJ01526160" autofocus>
     <button id="searchBtn" onclick="searchWork()">搜索</button>
+    <button class="secondary" id="organizeBtn" onclick="organizeDir()">整理媒体目录</button>
   </div>
   <div class="result" id="result"></div>
   <div class="header" id="header">
@@ -445,6 +451,54 @@ async function cleanWork() {
 document.getElementById('rjInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') searchWork();
 });
+
+// 整理媒体目录：弹系统文件夹选择框 → 确认 → 执行归类移动
+async function organizeDir() {
+  const btn = document.getElementById('organizeBtn');
+  btn.disabled = true;
+  btn.textContent = '选择目录中...';
+  try {
+    // 第一步：弹原生文件夹选择框（阻塞直到用户选择或取消）
+    const pickResp = await fetch('/api/browse-folder', { method: 'POST' });
+    if (pickResp.status === 204) { showResult(true, 'ℹ️ 已取消选择目录'); return; }
+    const pickData = await pickResp.json();
+    if (!pickResp.ok) throw new Error(pickData.error || '打开文件夹选择框失败');
+
+    const dir = pickData.dir;
+    if (!confirm(
+      `整理目录：${dir}\n\n` +
+      `· 图片 → 图片\\ （移动并统一重命名为 1、2、3…）\n` +
+      `· 视频 → 视频\\ （保持原名，重名的都加 [重复] 前缀）\n` +
+      `· 音频 → 音频\\ （保持原名，重名的都加 [重复] 前缀）\n\n` +
+      `注意：是移动不是复制，且会递归处理所有子目录。确认执行？`
+    )) return;
+
+    // 第二步：执行整理
+    btn.textContent = '整理中...';
+    const resp = await fetch('/api/organize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '整理失败');
+    if (data.images === 0 && data.videos === 0 && data.audios === 0) {
+      showResult(true, `ℹ️ 目录中没有找到图片/视频/音频文件<br>目录：${data.dir}`);
+      return;
+    }
+    let msg = `✅ 整理完成：${data.dir}<br>`;
+    if (data.images > 0) msg += `图片 <b>${data.images}</b> 个 → 图片\\（已重命名为 1、2、3…）<br>`;
+    if (data.videos > 0) msg += `视频 <b>${data.videos}</b> 个 → 视频\\<br>`;
+    if (data.audios > 0) msg += `音频 <b>${data.audios}</b> 个 → 音频\\<br>`;
+    if (data.dupes > 0) msg += `其中 <b>${data.dupes}</b> 个文件因重名加了 [重复] 前缀`;
+    showResult(true, msg);
+  } catch (e) {
+    showResult(false, '❌ ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '整理媒体目录';
+  }
+}
 
 // 支持 ?id=RJ... 直接加载
 (function init() {
