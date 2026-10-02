@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sqweek/dialog"
+	"github.com/ncruces/zenity"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
@@ -315,12 +315,16 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 	},
 }
 
-// browseFolderDialog 弹出 Windows 原生现代文件夹选择框（IFileOpenDialog，
-// 与资源管理器同风格，支持地址栏/搜索/导航），返回选中的目录绝对路径；
-// 用户取消时返回空字符串。该调用会阻塞直到用户关闭对话框。
+// browseFolderDialog 弹出 Windows 原生现代文件夹选择框（IFileOpenDialog +
+// FOS_PICKFOLDERS，与资源管理器同风格，支持地址栏/搜索/导航），
+// 返回选中的目录绝对路径；用户取消时返回空字符串。
+// 该调用会阻塞直到用户关闭对话框。
 func browseFolderDialog() (string, error) {
-	dir, err := dialog.Directory().Title("选择要整理的目录").Browse()
-	if err == dialog.ErrCancelled {
+	dir, err := zenity.SelectFile(
+		zenity.Title("选择要整理的目录"),
+		zenity.Directory(),
+	)
+	if err == zenity.ErrCanceled {
 		return "", nil
 	}
 	if err != nil {
