@@ -38,16 +38,19 @@ const (
 
 // OrganizeResult 记录一次目录整理的结果统计
 type OrganizeResult struct {
-	Images int // 移动的图片数（已按 1,2,3… 重命名）
-	Videos int // 移动的视频数
-	Audios int // 移动的音频数
-	Dupes  int // 因重名被加上 [重复] 前缀的文件数（视频/音频）
+	Images  int // 移动的图片数（已按 1,2,3… 重命名）
+	Videos  int // 移动的视频数
+	Audios  int // 移动的音频数
+	Dupes   int // 因重名被加上 [重复] 前缀的文件数（视频/音频）
+	Deleted int // 删除的非媒体文件数
 }
 
 // OrganizeMediaFiles 将 root 目录（含子目录，递归）中的媒体文件归类移动：
 //   - 图片 → root/图片/，统一重命名为 1、2、3…（保留扩展名）
 //   - 视频 → root/视频/，音频 → root/音频/，保持原名；
 //     若有重名（含目标目录已有文件），重名的文件都加上 [重复] 前缀
+//   - 整理完成后，root 下不属于这三个子文件夹的所有内容（txt、脚本、
+//     空目录等）全部删除，最终只保留 图片/视频/音频 三个子文件夹
 //
 // 已位于三个目标子文件夹内的文件不会重复处理。
 func OrganizeMediaFiles(root string) (*OrganizeResult, error) {
@@ -134,7 +137,47 @@ func OrganizeMediaFiles(root string) (*OrganizeResult, error) {
 		}
 	}
 
+	// 删除 root 下不属于三个目标子文件夹的所有内容（含空目录），
+	// 使整理后目录中只剩 图片/视频/音频
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return res, fmt.Errorf("读取目录失败 %s: %w", root, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() && targetDirs[e.Name()] {
+			continue
+		}
+		path := filepath.Join(root, e.Name())
+		n, _ := countFiles(path)
+		if err := os.RemoveAll(path); err != nil {
+			return res, fmt.Errorf("删除失败 %s: %w", path, err)
+		}
+		res.Deleted += n
+	}
+
 	return res, nil
+}
+
+// countFiles 统计 path 下的文件总数（path 本身是文件时返回 1）
+func countFiles(path string) (int, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 1, nil
+	}
+	count := 0
+	err = filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			count++
+		}
+		return nil
+	})
+	return count, err
 }
 
 // moveKeepNames 把 files 保持原名移动到 targetDir；

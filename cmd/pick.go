@@ -221,14 +221,15 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
-			logger.Done("整理目录 %s 完成: 图片 %d, 视频 %d, 音频 %d, 重名标记 %d",
-				absDir, res.Images, res.Videos, res.Audios, res.Dupes)
+			logger.Done("整理目录 %s 完成: 图片 %d, 视频 %d, 音频 %d, 重名标记 %d, 删除其他文件 %d",
+				absDir, res.Images, res.Videos, res.Audios, res.Dupes, res.Deleted)
 			c.JSON(http.StatusOK, gin.H{
-				"dir":    absDir,
-				"images": res.Images,
-				"videos": res.Videos,
-				"audios": res.Audios,
-				"dupes":  res.Dupes,
+				"dir":     absDir,
+				"images":  res.Images,
+				"videos":  res.Videos,
+				"audios":  res.Audios,
+				"dupes":   res.Dupes,
+				"deleted": res.Deleted,
 			})
 		})
 

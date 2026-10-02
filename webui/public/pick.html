@@ -469,8 +469,10 @@ async function organizeDir() {
       `整理目录：${dir}\n\n` +
       `· 图片 → 图片\\ （移动并统一重命名为 1、2、3…）\n` +
       `· 视频 → 视频\\ （保持原名，重名的都加 [重复] 前缀）\n` +
-      `· 音频 → 音频\\ （保持原名，重名的都加 [重复] 前缀）\n\n` +
-      `注意：是移动不是复制，且会递归处理所有子目录。确认执行？`
+      `· 音频 → 音频\\ （保持原名，重名的都加 [重复] 前缀）\n` +
+      `· 其他所有文件（txt、脚本、空目录等）将被永久删除\n\n` +
+      `整理后目录中只保留 图片/视频/音频 三个子文件夹。\n` +
+      `注意：是移动不是复制，删除不可恢复，且会递归处理所有子目录。确认执行？`
     )) return;
 
     // 第二步：执行整理
@@ -482,15 +484,16 @@ async function organizeDir() {
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || '整理失败');
-    if (data.images === 0 && data.videos === 0 && data.audios === 0) {
-      showResult(true, `ℹ️ 目录中没有找到图片/视频/音频文件<br>目录：${data.dir}`);
+    if (data.images === 0 && data.videos === 0 && data.audios === 0 && data.deleted === 0) {
+      showResult(true, `ℹ️ 目录中没有找到需要整理的内容<br>目录：${data.dir}`);
       return;
     }
     let msg = `✅ 整理完成：${data.dir}<br>`;
     if (data.images > 0) msg += `图片 <b>${data.images}</b> 个 → 图片\\（已重命名为 1、2、3…）<br>`;
     if (data.videos > 0) msg += `视频 <b>${data.videos}</b> 个 → 视频\\<br>`;
     if (data.audios > 0) msg += `音频 <b>${data.audios}</b> 个 → 音频\\<br>`;
-    if (data.dupes > 0) msg += `其中 <b>${data.dupes}</b> 个文件因重名加了 [重复] 前缀`;
+    if (data.dupes > 0) msg += `其中 <b>${data.dupes}</b> 个文件因重名加了 [重复] 前缀<br>`;
+    if (data.deleted > 0) msg += `已删除其他非媒体文件 <b>${data.deleted}</b> 个，目录中只保留 图片/视频/音频`;
     showResult(true, msg);
   } catch (e) {
     showResult(false, '❌ ' + e.message);

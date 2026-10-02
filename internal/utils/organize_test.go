@@ -91,9 +91,25 @@ func TestOrganizeMediaFiles(t *testing.T) {
 		t.Fatalf("音频目录应有 4 个文件，实际 %d", len(audioEntries))
 	}
 
-	// 非媒体文件原样保留
-	if !exists(filepath.Join(root, "links.txt")) || !exists(filepath.Join(root, "sub", "readme.txt")) {
-		t.Error("非媒体文件被移动")
+	// 非媒体文件全部被删除，root 下只剩三个目标子文件夹
+	if exists(filepath.Join(root, "links.txt")) || exists(filepath.Join(root, "sub")) {
+		t.Error("非媒体内容未被删除")
+	}
+	if res.Deleted != 2 { // links.txt + sub/readme.txt
+		t.Fatalf("删除计数不符: %+v", res)
+	}
+	rootEntries, _ := os.ReadDir(root)
+	if len(rootEntries) != 3 {
+		names := []string{}
+		for _, e := range rootEntries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("root 应只剩 3 个子文件夹，实际: %v", names)
+	}
+	for _, e := range rootEntries {
+		if e.Name() != "图片" && e.Name() != "视频" && e.Name() != "音频" {
+			t.Errorf("root 下残留: %s", e.Name())
+		}
 	}
 }
 
