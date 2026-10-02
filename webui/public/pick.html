@@ -112,6 +112,52 @@
   }
   .result.error { background: #fef0f0; border-color: #fbc4c4; color: #c45656; }
   .placeholder { text-align: center; color: #909399; padding: 60px 20px; font-size: 14px; }
+  /* 整理媒体目录：任务列表弹窗 */
+  .modal-mask {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    z-index: 100; align-items: center; justify-content: center;
+  }
+  .modal-mask.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 10px; width: 680px; max-width: 92vw;
+    max-height: 82vh; display: flex; flex-direction: column;
+    padding: 20px 24px; box-shadow: 0 8px 30px rgba(0,0,0,.2);
+  }
+  .modal h3 { font-size: 16px; margin-bottom: 4px; }
+  .modal .modal-tip { font-size: 12px; color: #909399; margin-bottom: 12px; line-height: 1.6; }
+  .task-list {
+    flex: 1; overflow-y: auto; min-height: 140px;
+    border: 1px solid #ebeef5; border-radius: 6px; padding: 6px; margin-bottom: 12px;
+  }
+  .task-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 4px; font-size: 13px;
+  }
+  .task-row:hover { background: #f5f7fa; }
+  .task-row .path { flex: 1; word-break: break-all; color: #2c3e50; }
+  .task-row .status { font-size: 12px; color: #909399; white-space: nowrap; }
+  .task-row .status.ok { color: #67c23a; }
+  .task-row .status.err { color: #f56c6c; }
+  .task-row button.del {
+    border: 1px solid #fbc4c4; background: #fff; color: #f56c6c;
+    border-radius: 4px; padding: 2px 10px; font-size: 12px; cursor: pointer;
+    flex-shrink: 0;
+  }
+  .task-row button.del:hover { background: #fef0f0; }
+  .task-empty { text-align: center; color: #c0c4cc; padding: 36px 0; font-size: 13px; }
+  .modal-footer { display: flex; gap: 8px; align-items: center; }
+  .modal-footer button {
+    border: 1px solid #dcdfe6; background: #fff; border-radius: 6px;
+    padding: 7px 16px; font-size: 13px; cursor: pointer; color: #606266;
+  }
+  .modal-footer button:hover { border-color: #409eff; color: #409eff; }
+  .modal-footer button:disabled { border-color: #e4e7ed; color: #c0c4cc; cursor: not-allowed; }
+  .modal-footer .spacer { flex: 1; }
+  .modal-footer button.run { background: #409eff; border-color: #409eff; color: #fff; }
+  .modal-footer button.run:hover { background: #66b1ff; }
+  .modal-footer button.run:disabled { background: #a0cfff; border-color: #a0cfff; }
+  .modal-footer button.clear-all { color: #f56c6c; border-color: #fbc4c4; }
+  .modal-footer button.clear-all:hover { background: #fef0f0; border-color: #f56c6c; }
 </style>
 </head>
 <body>
@@ -119,7 +165,7 @@
   <div class="search-bar">
     <input id="rjInput" type="text" placeholder="输入 RJ 号，例如 RJ01526160" autofocus>
     <button id="searchBtn" onclick="searchWork()">搜索</button>
-    <button class="secondary" id="organizeBtn" onclick="organizeDir()">整理媒体目录</button>
+    <button class="secondary" id="organizeBtn" onclick="openOrganizeModal()">整理媒体目录</button>
   </div>
   <div class="result" id="result"></div>
   <div class="header" id="header">
@@ -140,6 +186,25 @@
   </div>
   <div class="tree" id="tree"></div>
   <div class="placeholder" id="placeholder">输入 RJ 号搜索作品，勾选要下载的文件后交给 IDM 下载</div>
+</div>
+
+<!-- 整理媒体目录：任务列表弹窗 -->
+<div class="modal-mask" id="organizeModal">
+  <div class="modal">
+    <h3>整理媒体目录 · 任务列表</h3>
+    <div class="modal-tip">
+      图片 → 图片\（重命名为 1、2、3…）；视频 → 视频\、音频 → 音频\（重名加 [重复] 前缀）；<br>
+      其余文件将被<b>永久删除</b>，整理后目录中只保留 图片/视频/音频 三个子文件夹。
+    </div>
+    <div class="task-list" id="taskList"></div>
+    <div class="modal-footer">
+      <button id="addTaskBtn" onclick="addOrganizeTasks()">＋ 添加目录（可多选）</button>
+      <button class="clear-all" id="clearTasksBtn" onclick="clearOrganizeTasks()">清空列表</button>
+      <span class="spacer"></span>
+      <button onclick="closeOrganizeModal()">关闭</button>
+      <button class="run" id="runTasksBtn" onclick="runOrganizeTasks()">开始整理</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -452,54 +517,152 @@ document.getElementById('rjInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') searchWork();
 });
 
-// 整理媒体目录：弹系统文件夹选择框 → 确认 → 执行归类移动
-async function organizeDir() {
-  const btn = document.getElementById('organizeBtn');
+// ============ 整理媒体目录：任务列表 ============
+let organizeTasks = []; // [{dir, status, statusType}] statusType: '' | 'ok' | 'err'
+
+function openOrganizeModal() {
+  renderTasks();
+  document.getElementById('organizeModal').classList.add('show');
+}
+
+function closeOrganizeModal() {
+  document.getElementById('organizeModal').classList.remove('show');
+}
+
+function renderTasks() {
+  const list = document.getElementById('taskList');
+  const runBtn = document.getElementById('runTasksBtn');
+  const clearBtn = document.getElementById('clearTasksBtn');
+  if (organizeTasks.length === 0) {
+    list.innerHTML = '<div class="task-empty">任务列表为空，点击下方"添加目录"按钮（可一次多选）</div>';
+  } else {
+    list.innerHTML = '';
+    organizeTasks.forEach((t, i) => {
+      const row = document.createElement('div');
+      row.className = 'task-row';
+      const path = document.createElement('span');
+      path.className = 'path';
+      path.textContent = t.dir;
+      row.appendChild(path);
+      if (t.status) {
+        const st = document.createElement('span');
+        st.className = 'status' + (t.statusType ? ' ' + t.statusType : '');
+        st.textContent = t.status;
+        row.appendChild(st);
+      }
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = '删除';
+      del.onclick = () => removeOrganizeTask(i);
+      row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+  runBtn.disabled = organizeTasks.length === 0;
+  clearBtn.disabled = organizeTasks.length === 0;
+}
+
+// 添加任务：弹原生文件夹选择框（多选），去重后追加到列表
+async function addOrganizeTasks() {
+  const btn = document.getElementById('addTaskBtn');
   btn.disabled = true;
   btn.textContent = '选择目录中...';
   try {
-    // 第一步：弹原生文件夹选择框（阻塞直到用户选择或取消）
-    const pickResp = await fetch('/api/browse-folder', { method: 'POST' });
-    if (pickResp.status === 204) { showResult(true, 'ℹ️ 已取消选择目录'); return; }
-    const pickData = await pickResp.json();
-    if (!pickResp.ok) throw new Error(pickData.error || '打开文件夹选择框失败');
-
-    const dir = pickData.dir;
-    if (!confirm(
-      `整理目录：${dir}\n\n` +
-      `· 图片 → 图片\\ （移动并统一重命名为 1、2、3…）\n` +
-      `· 视频 → 视频\\ （保持原名，重名的都加 [重复] 前缀）\n` +
-      `· 音频 → 音频\\ （保持原名，重名的都加 [重复] 前缀）\n` +
-      `· 其他所有文件（txt、脚本、空目录等）将被永久删除\n\n` +
-      `整理后目录中只保留 图片/视频/音频 三个子文件夹。\n` +
-      `注意：是移动不是复制，删除不可恢复，且会递归处理所有子目录。确认执行？`
-    )) return;
-
-    // 第二步：执行整理
-    btn.textContent = '整理中...';
-    const resp = await fetch('/api/organize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dir })
-    });
+    const resp = await fetch('/api/browse-folder', { method: 'POST' });
+    if (resp.status === 204) return; // 用户取消
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || '整理失败');
-    if (data.images === 0 && data.videos === 0 && data.audios === 0 && data.deleted === 0) {
-      showResult(true, `ℹ️ 目录中没有找到需要整理的内容<br>目录：${data.dir}`);
-      return;
+    if (!resp.ok) throw new Error(data.error || '打开文件夹选择框失败');
+    let added = 0;
+    for (const dir of data.dirs || []) {
+      if (!organizeTasks.some(t => t.dir === dir)) {
+        organizeTasks.push({ dir, status: '', statusType: '' });
+        added++;
+      }
     }
-    let msg = `✅ 整理完成：${data.dir}<br>`;
-    if (data.images > 0) msg += `图片 <b>${data.images}</b> 个 → 图片\\（已重命名为 1、2、3…）<br>`;
-    if (data.videos > 0) msg += `视频 <b>${data.videos}</b> 个 → 视频\\<br>`;
-    if (data.audios > 0) msg += `音频 <b>${data.audios}</b> 个 → 音频\\<br>`;
-    if (data.dupes > 0) msg += `其中 <b>${data.dupes}</b> 个文件因重名加了 [重复] 前缀<br>`;
-    if (data.deleted > 0) msg += `已删除其他非媒体文件 <b>${data.deleted}</b> 个，目录中只保留 图片/视频/音频`;
-    showResult(true, msg);
+    if (added === 0 && (data.dirs || []).length > 0) {
+      showResult(true, 'ℹ️ 所选目录已在任务列表中');
+    }
+    renderTasks();
   } catch (e) {
     showResult(false, '❌ ' + e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = '整理媒体目录';
+    btn.textContent = '＋ 添加目录（可多选）';
+  }
+}
+
+function removeOrganizeTask(i) {
+  organizeTasks.splice(i, 1);
+  renderTasks();
+}
+
+// 一键清空任务列表
+function clearOrganizeTasks() {
+  if (organizeTasks.length === 0) return;
+  if (!confirm(`确认清空全部 ${organizeTasks.length} 个任务？（只清空列表，不执行任何文件操作）`)) return;
+  organizeTasks = [];
+  renderTasks();
+}
+
+// 批量执行：确认规则后提交全部任务，逐目录回显结果
+async function runOrganizeTasks() {
+  if (organizeTasks.length === 0) return;
+  if (!confirm(
+    `确认整理以下 ${organizeTasks.length} 个目录？\n\n` +
+    organizeTasks.map(t => '· ' + t.dir).join('\n') + '\n\n' +
+    `图片将重命名为 1、2、3…；视频/音频重名会加 [重复] 前缀；\n` +
+    `其余文件将被永久删除，删除不可恢复！`
+  )) return;
+
+  const runBtn = document.getElementById('runTasksBtn');
+  const addBtn = document.getElementById('addTaskBtn');
+  const clearBtn = document.getElementById('clearTasksBtn');
+  runBtn.disabled = addBtn.disabled = clearBtn.disabled = true;
+  runBtn.textContent = '整理中...';
+  organizeTasks.forEach(t => { t.status = '等待执行…'; t.statusType = ''; });
+  renderTasks();
+  try {
+    const resp = await fetch('/api/organize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dirs: organizeTasks.map(t => t.dir) })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '整理失败');
+
+    // 按目录路径把结果回写到对应任务行
+    let okCount = 0, errCount = 0;
+    for (const r of data.results || []) {
+      const task = organizeTasks.find(t => t.dir === r.dir);
+      if (!task) continue;
+      if (r.error) {
+        task.status = '❌ ' + r.error;
+        task.statusType = 'err';
+        errCount++;
+      } else {
+        const parts = [];
+        if (r.images > 0) parts.push(`图${r.images}`);
+        if (r.videos > 0) parts.push(`视${r.videos}`);
+        if (r.audios > 0) parts.push(`音${r.audios}`);
+        if (r.dupes > 0) parts.push(`重名${r.dupes}`);
+        if (r.deleted > 0) parts.push(`删${r.deleted}`);
+        task.status = '✅ ' + (parts.length ? parts.join(' ') : '无可整理内容');
+        task.statusType = 'ok';
+        okCount++;
+      }
+    }
+    renderTasks();
+    showResult(errCount > 0 ? false : true,
+      `${errCount > 0 ? '⚠️' : '✅'} 批量整理完成：成功 <b>${okCount}</b> 个，失败 <b>${errCount}</b> 个，详见任务列表`);
+  } catch (e) {
+    organizeTasks.forEach(t => { if (t.status === '等待执行…') { t.status = ''; t.statusType = ''; } });
+    renderTasks();
+    showResult(false, '❌ ' + e.message);
+  } finally {
+    runBtn.disabled = organizeTasks.length === 0;
+    addBtn.disabled = false;
+    clearBtn.disabled = organizeTasks.length === 0;
+    runBtn.textContent = '开始整理';
   }
 }
 

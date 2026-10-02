@@ -188,49 +188,59 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 			outputRoot = "."
 		}
 
-		// API: 弹出系统文件夹选择框，返回用户选择的目录（取消返回 204）
+		// API: 弹出系统文件夹选择框（可多选），返回用户选择的目录列表（取消返回 204）
 		r.POST("/api/browse-folder", func(c *gin.Context) {
-			dir, err := browseFolderDialog()
+			dirs, err := browseFoldersDialog()
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "打开文件夹选择框失败: " + err.Error()})
 				return
 			}
-			if dir == "" {
+			if len(dirs) == 0 {
 				c.Status(http.StatusNoContent)
 				return
 			}
-			c.JSON(http.StatusOK, gin.H{"dir": dir})
+			c.JSON(http.StatusOK, gin.H{"dirs": dirs})
 		})
 
-		// API: 整理目录中的媒体文件（图片/视频/音频分类移动到子文件夹）
+		// API: 批量整理目录中的媒体文件（图片/视频/音频分类移动到子文件夹）
 		r.POST("/api/organize", func(c *gin.Context) {
 			var req struct {
-				Dir string `json:"dir"`
+				Dirs []string `json:"dirs"`
 			}
-			if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Dir) == "" {
+			if err := c.ShouldBindJSON(&req); err != nil || len(req.Dirs) == 0 {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数无效：缺少目录"})
 				return
 			}
-			absDir, err := filepath.Abs(strings.TrimSpace(req.Dir))
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "目录路径无效: " + err.Error()})
-				return
+			// 逐个目录执行，单个失败不影响其他任务，结果按提交顺序返回
+			results := make([]gin.H, 0, len(req.Dirs))
+			for _, d := range req.Dirs {
+				d = strings.TrimSpace(d)
+				if d == "" {
+					continue
+				}
+				absDir, err := filepath.Abs(d)
+				if err != nil {
+					results = append(results, gin.H{"dir": d, "error": "目录路径无效: " + err.Error()})
+					continue
+				}
+				res, err := utils.OrganizeMediaFiles(absDir)
+				if err != nil {
+					logger.Warn("整理目录 %s 失败: %v", absDir, err)
+					results = append(results, gin.H{"dir": absDir, "error": err.Error()})
+					continue
+				}
+				logger.Done("整理目录 %s 完成: 图片 %d, 视频 %d, 音频 %d, 重名标记 %d, 删除其他文件 %d",
+					absDir, res.Images, res.Videos, res.Audios, res.Dupes, res.Deleted)
+				results = append(results, gin.H{
+					"dir":     absDir,
+					"images":  res.Images,
+					"videos":  res.Videos,
+					"audios":  res.Audios,
+					"dupes":   res.Dupes,
+					"deleted": res.Deleted,
+				})
 			}
-			res, err := utils.OrganizeMediaFiles(absDir)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			logger.Done("整理目录 %s 完成: 图片 %d, 视频 %d, 音频 %d, 重名标记 %d, 删除其他文件 %d",
-				absDir, res.Images, res.Videos, res.Audios, res.Dupes, res.Deleted)
-			c.JSON(http.StatusOK, gin.H{
-				"dir":     absDir,
-				"images":  res.Images,
-				"videos":  res.Videos,
-				"audios":  res.Audios,
-				"dupes":   res.Dupes,
-				"deleted": res.Deleted,
-			})
+			c.JSON(http.StatusOK, gin.H{"results": results})
 		})
 
 		// API: 清理指定作品的 links.txt 和下载脚本
@@ -315,22 +325,22 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 	},
 }
 
-// browseFolderDialog 弹出 Windows 原生现代文件夹选择框（IFileOpenDialog +
-// FOS_PICKFOLDERS，与资源管理器同风格，支持地址栏/搜索/导航），
-// 返回选中的目录绝对路径；用户取消时返回空字符串。
+// browseFoldersDialog 弹出 Windows 原生现代文件夹选择框（IFileOpenDialog +
+// FOS_PICKFOLDERS + FOS_ALLOWMULTISELECT，与资源管理器同风格，可一次多选目录），
+// 返回选中的目录绝对路径列表；用户取消时返回空列表。
 // 该调用会阻塞直到用户关闭对话框。
-func browseFolderDialog() (string, error) {
-	dir, err := zenity.SelectFile(
-		zenity.Title("选择要整理的目录"),
+func browseFoldersDialog() ([]string, error) {
+	dirs, err := zenity.SelectFileMultiple(
+		zenity.Title("选择要整理的目录（可多选）"),
 		zenity.Directory(),
 	)
 	if err == zenity.ErrCanceled {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return dir, nil
+	return dirs, nil
 }
 
 func init() {
