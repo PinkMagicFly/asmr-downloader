@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sqweek/dialog"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
@@ -315,28 +315,18 @@ pick 命令启动一个本地网站（自动打开浏览器），在网页中搜
 	},
 }
 
-// browseFolderDialog 弹出 Windows 原生文件夹选择框（PowerShell FolderBrowserDialog），
-// 返回选中的目录绝对路径；用户取消时返回空字符串。
-// 该调用会阻塞直到用户关闭对话框，TopMost 保证窗口在最前。
+// browseFolderDialog 弹出 Windows 原生现代文件夹选择框（IFileOpenDialog，
+// 与资源管理器同风格，支持地址栏/搜索/导航），返回选中的目录绝对路径；
+// 用户取消时返回空字符串。该调用会阻塞直到用户关闭对话框。
 func browseFolderDialog() (string, error) {
-	script := `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Windows.Forms
-$f = New-Object System.Windows.Forms.FolderBrowserDialog
-$f.Description = '选择要整理的目录'
-$f.ShowNewFolderButton = $true
-$owner = New-Object System.Windows.Forms.Form
-$owner.TopMost = $true
-$null = $owner.Handle
-$result = $f.ShowDialog($owner)
-$owner.Dispose()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($f.SelectedPath) }
-`
-	out, err := exec.Command("powershell", "-NoProfile", "-STA", "-Command", script).Output()
+	dir, err := dialog.Directory().Title("选择要整理的目录").Browse()
+	if err == dialog.ErrCancelled {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return dir, nil
 }
 
 func init() {

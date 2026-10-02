@@ -14,6 +14,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
+	github.com/sqweek/dialog v0.0.0-20260123140253-64c163d53aac
 	github.com/vbauerster/mpb/v8 v8.10.2
 	golang.org/x/net v0.43.0
 	golang.org/x/time v0.14.0
@@ -21,6 +22,7 @@ require (
 )
 
 require (
+	github.com/TheTitanrain/w32 v0.0.0-20180517000239-4f5cfb03fabf // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d // indirect
 	github.com/bytedance/sonic v1.14.0 // indirect
